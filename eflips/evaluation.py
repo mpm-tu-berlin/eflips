@@ -1,0 +1,3452 @@
+# -*- coding: utf-8 -*-
+from eflips.io import export_pickle
+from functools import reduce
+from collections import OrderedDict
+from eflips.settings import global_constants
+from eflips.misc import cm2in, in2cm, set_default_kwargs, deep_merge, hline_thin, hline_thick, TimeInfo
+from eflips.schedule import ScheduleContainer, TimeTable, Schedule
+from eflips.energy import Units
+from eflips.grid import GridPoint, GridSegment
+import pandas
+import copy
+import logging
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import matplotlib.patches as patches
+import matplotlib.ticker as ticker
+import matplotlib.colors as mcolors
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+from matplotlib import cm
+import math
+import numpy as np
+from itertools import zip_longest
+
+import pandas as pd
+import xlsxwriter
+import os.path
+
+from openpyxl import load_workbook
+
+from collections import Counter
+from eflips.misc import CalcDict, AddSubDict, translate, TimeInfo
+from statistics import mean
+import operator
+import collections
+import random
+import folium
+
+
+class DataLogger:
+    def __init__(self, env, object_to_log):
+        """
+        object_to_log must have the following attributes:
+        - state_change_event: An eflips.events.EventHandler object. DataLogger
+        will listen to this event and log specified attributes each time it is
+        triggered.
+        - log_attributes: A dict of the following form:
+        {'attribute_alias_1': {'attribute': 'Attribute name in object'
+                               'name': 'Attribute name for plotting',
+                               'unit': 'Unit name for plotting',
+                               'discrete': True/False},
+         'attribute_alias_2': ...,
+         ...}
+
+         attribute_alias can be used to shorten long attribute names to a more
+         legible form.
+
+         The actual attribute name to be logged may reference attributes of
+         attributes via dot notation (e.g. aux_power.energy).
+
+        - params: A dict of the form {'param_name': value} with constants
+        (parameters) supplied at instantiation.
+         """
+        try:
+            object_to_log.state_change_event.add(self._log)
+        except AttributeError:
+            logger = logging.getLogger('evaluation_logger')
+            logger.error('DataLogger requires the logged object '
+                         'to have a state_change_event() method')
+            raise AttributeError('DataLogger requires the logged object '
+                                 'to have a state_change_event() method!')
+
+        self.env = env
+        self.object_to_log = object_to_log
+        try:
+            self.log_data = copy.deepcopy(object_to_log.log_attributes)
+        except AttributeError:
+            logger = logging.getLogger('evaluation_logger')
+            logger.error('DataLogger requires the logged object '
+                         'to have a log_attributes attribute!')
+            raise AttributeError('DataLogger requires the logged object '
+                                 'to have a log_attributes attribute!')
+
+        try:
+            self.params = copy.deepcopy(object_to_log.log_params)
+        except AttributeError:
+            self.params = None
+
+        # If we have a mission list (where vehicles store their history of
+        # schedules or driving profiles), insert an object reference to it:
+        try:
+            self.mission_list = object_to_log.mission_list
+        except AttributeError:
+            pass
+
+        # Force log upon initialisation:
+        self.object_to_log.state_change_event()
+
+    def _log(self, sender):
+        # Implement later: Only log if attribute value has changed!
+        for log_attr in self.log_data.keys():
+            attr_ref = self.log_data[log_attr]['attribute']
+            if 'values' not in self.log_data[log_attr]:
+                # Initialise
+                self.log_data[log_attr].update({'values': OrderedDict()})
+            self.log_data[log_attr]['values'].update(
+                {self.env.now: self._read_attribute(attr_ref)}
+            )
+
+    def _read_attribute(self, attr):
+        """Read attribute from object_to_log. Attributes of attributes
+        (obj.attr1.attr2.attr3) may be specified."""
+        try:
+            res = copy.deepcopy(
+                reduce(getattr, [self.object_to_log] + attr.split('.'))
+            )
+        except AttributeError:
+            res = None
+        return res
+
+
+class LogRetriever:
+    """Class to gather DataLogger records that can be passed to evaluation
+    functions or saved to disk."""
+    def __init__(self, **kwargs):
+        """Instantiate LogRetriever and grab DataLogger records.
+
+        Any number of objects can be passed as keyword-argument pairs of the
+        form name_of_object=obj. obj can either be an object with a DataLogger
+        instance as its 'logger' attribute, or a dict of several such objects
+        with their IDs as keys and the objects as values (as generated by the
+        get_all_by_ID() method in the Fleet, DepotContainer and
+        ChargingNetwork classes)."""
+        self.data = dict()
+        for key, value in kwargs.items():
+            if isinstance(value, dict):
+                # We must assume we have been passed a dict of the form
+                # {ID: obj}.
+                self.data.update({key: dict()})
+                for ID, obj in value.items():
+                    log_dict = self.compile_log_dict(obj)
+                    self.data[key].update({ID: log_dict})
+            else:
+                obj = value
+                log_dict = self.compile_log_dict(obj)
+                self.data.update({key: log_dict})
+
+    @staticmethod
+    def compile_log_dict(obj):
+        """Extract contents of logger (parameters and data log) into dict."""
+        if hasattr(obj, 'logger'):
+            if hasattr(obj.logger, 'mission_list'):
+                log_dict = {
+                    'params': obj.logger.params,
+                    'log_data': obj.logger.log_data,
+                    'mission_list': obj.logger.mission_list
+                }
+            else:
+                log_dict = {
+                    'params': obj.logger.params,
+                    'log_data': obj.logger.log_data
+                }
+        else:
+            log_dict = {
+                'params': None,
+                'log_data': None
+            }
+        return log_dict
+
+    def save(self, file, replace_file=True):
+        """Save to binary file. Use of file ending '.dat' is recommended ."""
+        export_pickle(file, self.data, replace_file=replace_file)
+        print("------------------")
+        print("Simulation data saved in '%s'" % file)
+
+
+def evaluate_simulation_log(log_retriever_data):
+    """Evaluate simulation logger record. log_retriever_data is the data
+    dict generated by LogRetriever, i.e. retriever.data."""
+    def collect_single(retriever_data, attribute, new_name, which='last'):
+        """Expects a retriever dict for a single object of the form:
+
+        retriever_data = {
+            'params': {
+                 'param1': value1,
+                 'param2': value2},
+            'log_data': {
+                'attribute1': {
+                    'attribute': string,
+                    'name': string,
+                    'unit': string,
+                    'discrete': bool,
+                    'values': {
+                        time1: val1,
+                        time2: val2}
+                }
+            }
+        }
+        """
+        val = get_value(retriever_data, attribute, which)
+        unit = retriever_data['log_data'][attribute]['unit']
+        discrete = retriever_data['log_data'][attribute]['discrete']
+        res = {'name': new_name,
+               'unit': unit,
+               'discrete': discrete,
+               'value': val
+        }
+        return res
+
+    def get_value(retriever_data, attribute, which):
+        # Convert to list for indexed access:
+        data = list(retriever_data['log_data'][attribute]
+                    ['values'].values())
+        if which == 'sum':
+            if isinstance(data[0], AddSubDict):
+                # To enable summing over AddSubDicts, we must supply an
+                # object of the respective class as a start value:
+                val = sum(data, data[0].__class__())
+            else:
+                val = sum(data)
+        elif which == 'first':
+            val = data[0]
+        elif which == 'last':
+            val = data[-1]
+        elif which == 'max':
+            # Beware: If this attribute is of type AddSubDict, the sum of all
+            # element types will be evaluated to determine the maximum value.
+            # Instead of an AddSubDict object, this will return the value of the
+            # sum as different dict states may lead to the same sum.
+            if isinstance(data[0], AddSubDict):
+                val = max([sum(elem.values()) for elem in data])
+            else:
+                val = max(data)
+        elif which == 'mean':
+            if isinstance(data[0], AddSubDict):
+                val = mean([sum(elem.values()) for elem in data])
+            else:
+                val = mean(data)
+        else:
+            raise ValueError('Unknown value for argument "which".')
+        return val
+
+    def collect_multiple(retriever_data, attribute, new_name, operation='sum',
+                         which='last'):
+        """Expects a retriever dict for multiple objects of the form:
+        retriever_data = {
+          id1: {
+              'params': {
+                  'param1': value1,
+                  'param2': value2},
+              'log_data': {
+                  'attribute1': {
+                      'attribute': string,
+                      'name': string,
+                      'unit': string,
+                      'discrete': bool,
+                      'values': {
+                          time1: val1,
+                          time2: val2}
+                  }
+              }
+          },
+          id2: {
+              'params': {
+                  'param1': value1,
+                  'param2': value2},
+              'log_data': {
+                  'attribute1': {
+                      'attribute': string,
+                      'name': string,
+                      'unit': string,
+                      'discrete': bool,
+                      'values': {
+                          time1: val1,
+                          time2: val2}
+                  }
+              }
+          }
+        }
+        """
+        data = []
+        first_obj = list(retriever_data.values())[0]
+        unit = first_obj['log_data'][attribute]['unit']
+        discrete = first_obj['log_data'][attribute]['discrete']
+        for id, obj_data in retriever_data.items():
+            if obj_data['log_data'][attribute]['unit'] != unit or \
+                    obj_data['log_data'][attribute]['discrete'] != discrete:
+                raise ValueError('When aggregating log values, unit and '
+                                 'discrete attributes must match')
+            data.append(get_value(obj_data, attribute, which))
+
+        if operation == 'sum':
+            val = sum(data)
+        elif operation == 'mean':
+            val = mean(data)
+        else:
+            raise ValueError('Unknown value for argument "operation".')
+
+        res = {'name': new_name,
+               'unit': unit,
+               'discrete': discrete,
+               'value': val
+        }
+        return res
+
+    def collect_multiple_by_vehicle_type(retriever_data, attribute,
+                                         new_name, which='last'):
+        # Only supports summing at the moment
+        data = []
+        first_obj = list(retriever_data.values())[0]
+        unit = first_obj['log_data'][attribute]['unit']
+        discrete = first_obj['log_data'][attribute]['discrete']
+        for obj_data in retriever_data.values():
+            data.append((obj_data['params']['vehicle_type'].name,
+                         get_value(obj_data, attribute, which)))
+        val = CalcDict(data)
+        res = {'name': new_name,
+               'unit': unit,
+               'discrete': discrete,
+               'value': val
+        }
+        return res
+
+    res = dict()
+
+    # --------------------------------------------------------------------------
+    # Vehicles
+    # --------------------------------------------------------------------------
+
+    res.update({
+        'num_vehicles':
+            collect_single(log_retriever_data['fleet'], 'num_vehicles',
+                           'Number of vehicles generated', which='last'),
+
+        'fleet_operation_time':
+            collect_multiple_by_vehicle_type(log_retriever_data['vehicles'],
+                'operation_time', 'Fleet operation time', which='last'),
+
+        'driver_time':
+            collect_multiple_by_vehicle_type(log_retriever_data['vehicles'], 'driver_time',
+                'Paid driver time', which='last'),
+
+        'fleet_odo':
+            collect_multiple_by_vehicle_type(log_retriever_data['vehicles'], 'odo',
+                'Fleet mileage', which='last')
+    })
+
+
+    # Number of vehicles with invalid/critical SoC
+    num_ok = 0
+    num_critical = 0
+    num_invalid = 0
+    for vehicle_data in log_retriever_data['vehicles'].values():
+        if False in vehicle_data['log_data']['soc_valid']['values'].values():
+            num_invalid += 1
+        elif True in [entry[0] and entry[1] for entry in
+                      zip_longest(vehicle_data['log_data']['soc_valid']['values'].values(),
+                                  vehicle_data['log_data']['soc_critical']['values'].values())]:
+            num_critical += 1
+        else:
+            num_ok += 1
+    num_vehicles_by_energy_state = {
+        'name': 'Number of vehicles by energy state',
+        'unit': None,
+        'discrete': True,
+        'value': CalcDict([('ok', num_ok), ('critical', num_critical),
+                           ('invalid', num_invalid)])
+    }
+
+    res.update({'num_vehicles_by_energy_state': num_vehicles_by_energy_state})
+
+    # Overall consumption (of all vehicles) per medium
+    fleet_consumption = dict()
+    param_names = [('medium_primary', 'energy_consumed_primary'),
+                   ('medium_secondary', 'energy_consumed_secondary')]
+
+    for vehicle_id, vehicle_log in log_retriever_data['vehicles'].items():
+        for medium_key, energy_key in param_names:
+            if medium_key in vehicle_log['params']:
+                medium_name = vehicle_log['params'][medium_key]
+                consumption_dict = vehicle_log['log_data'][energy_key]
+
+                # Instantiate a field for this medium if it doesn't exist yet:
+                if not medium_name in fleet_consumption:
+                    fleet_consumption.update({medium_name: {
+                        'unit': consumption_dict['unit'],
+                        'value': 0
+                    }})
+
+                # Add vehicle consumption:
+                cons = list(consumption_dict['values'].values())[-1]
+
+                if cons is not None:
+                    fleet_consumption[medium_name]['value'] += cons
+
+    res.update({'fleet_consumption': fleet_consumption})
+
+
+
+    # --------------------------------------------------------------------------
+    # Charging facilities
+    # --------------------------------------------------------------------------
+
+    # Max. number of vehicles charging per facility (EXCEPT depots -
+    # these are treated separately)
+    facilities = ['charging_points', 'charging_segments']
+    for factype in facilities:
+        cf_eval = dict()
+        if factype in log_retriever_data:
+            for cf_id, cf_data in log_retriever_data[factype].items():
+                if not cf_data['params']['location'].type_ == 'depot':
+                    cf_eval.update({
+                        cf_id: {
+                            'params': cf_data['params'],
+                            'max_num_vehicles':
+                                collect_single(cf_data, 'num_vehicles',
+                                               'Max. number of vehicles charging',
+                                               which='max')}})
+            res.update({factype: cf_eval})
+
+    # --------------------------------------------------------------------------
+    # Depots
+    # --------------------------------------------------------------------------
+
+    depot_eval = dict()
+    if 'depots' in log_retriever_data:
+        for depot_id, depot_data in log_retriever_data['depots'].items():
+            depot_eval.update({
+                depot_id: {
+                    'params': depot_data['params'],
+                    'max_num_vehicles_in_service':
+                        collect_single(depot_data, 'num_vehicles_in_service',
+                            'Max. number of vehicles in service',
+                            which='max'),
+                    'max_num_vehicles_out_of_service':
+                        collect_single(depot_data, 'num_vehicles_out_of_service',
+                                       'Max. number of vehicles out of service',
+                                       which='max')
+                    }
+                })
+            if 'num_vehicles_charging' in depot_data['log_data']:
+                depot_eval[depot_id].update({'max_num_vehicles_charging':
+                            collect_single(depot_data, 'num_vehicles_charging',
+                                           'Max. number of vehicles charging',
+                                           which='max')})
+            if 'num_vehicles_ready' in depot_data['log_data']:
+                depot_eval[depot_id].update({'max_num_vehicles_ready':
+                        collect_single(depot_data, 'num_vehicles_ready',
+                                       'Max. number of vehicles ready for service',
+                                       which='max')})
+        res.update({'depots': depot_eval})
+
+    # --------------------------------------------------------------------------
+    # Max. number of vehicles per line
+    # --------------------------------------------------------------------------
+
+    if 'line_monitor' in log_retriever_data:
+        lines = []
+
+        # Gather all lines:
+        for time, num_vehicles in log_retriever_data['line_monitor']['log_data']\
+                ['trips_per_line']['values'].items():
+            for line in num_vehicles.keys():
+                if not line in lines:
+                    lines.append(line)
+
+        # Init dict:
+        max_vehicles_per_line = dict([(line, 0) for line in lines])
+
+        # Find largest values:
+        for time, num_vehicles in log_retriever_data['line_monitor']['log_data'] \
+                ['trips_per_line']['values'].items():
+            for line, val in num_vehicles.items():
+                if val > max_vehicles_per_line[line]:
+                    max_vehicles_per_line[line] = val
+
+        res.update({'max_vehicles_per_line': max_vehicles_per_line})
+
+    return res
+
+
+def evaluate_simulation_objects(fleet, charging_network=None):
+    """Evaluate simulation if no logger record is available. Use this for
+    resource-critical applications where data logging is disabled, e.g. batch
+    simulations or optimisation.
+
+    (Naturally, only a reduced set of attributes can be evaluated.)"""
+    res = {}
+
+    # Number of vehicles generated, fleet mileage
+    res.update({'num_vehicles': copy.copy(fleet.num_vehicles),
+                'fleet_mileage': copy.copy(fleet.mileage)})
+
+    # Fleet energy consumption and driver time
+    fleet_consumption = {}
+
+    res.update({
+        'driver_driving_time': 0,
+        'driver_pause_time': 0,
+        'driver_additional_paid_time': 0,
+        'driver_total_time': 0
+    })
+    for vehicle in fleet.get_all():
+        medium_primary = vehicle.energy_consumed_primary.medium.name
+        medium_secondary = vehicle.energy_consumed_secondary.medium.name\
+            if vehicle.energy_consumed_secondary is not None else None
+        if medium_primary in fleet_consumption:
+            fleet_consumption[medium_primary] += vehicle.energy_consumed_primary
+        else:
+            fleet_consumption.update({medium_primary:
+                                          vehicle.energy_consumed_primary})
+
+        if medium_secondary is not None:
+            if medium_secondary in fleet_consumption:
+                fleet_consumption[medium_secondary] += \
+                    vehicle.energy_consumed_secondary
+            else:
+                fleet_consumption.update(
+                    {medium_secondary: vehicle.energy_consumed_secondary})
+
+        res['driver_driving_time'] += vehicle.driver.driving_time
+        res['driver_pause_time'] += vehicle.driver.pause_time
+        res['driver_additional_paid_time'] += vehicle.driver.additional_paid_time
+        res['driver_total_time'] += vehicle.driver.total_time
+    res.update({'fleet_consumption': fleet_consumption})
+
+    fleet_consumption_by_vehicle_type = {} # {vehicle_type.name: {} for vehicle_type in fleet.vehicle_types}
+    for vehicle in fleet.get_all():
+        vtype = vehicle.vehicle_type.name
+        energy_primary = vehicle.energy_consumed_primary
+        energy_secondary = vehicle.energy_consumed_secondary
+        if not vtype in fleet_consumption_by_vehicle_type:
+            fleet_consumption_by_vehicle_type.update({vtype: {}})
+        if energy_primary.medium.name in \
+                fleet_consumption_by_vehicle_type[vtype]:
+            fleet_consumption_by_vehicle_type[vtype]\
+                [energy_primary.medium.name] += energy_primary
+        else:
+            fleet_consumption_by_vehicle_type[vtype].update(
+                {energy_primary.medium.name: energy_primary}
+            )
+        if energy_secondary is not None:
+            if energy_secondary.medium.name in \
+                    fleet_consumption_by_vehicle_type[vtype]:
+                fleet_consumption_by_vehicle_type[vtype] \
+                    [energy_secondary.medium.name] += energy_secondary
+            else:
+                fleet_consumption_by_vehicle_type[vtype].update(
+                    {energy_secondary.medium.name: energy_secondary}
+                )
+
+    res.update({'fleet_consumption_by_vehicle_type': fleet_consumption_by_vehicle_type})
+
+    fleet_specific_consumption_by_vehicle_type = {}
+    for vtype, consumption in fleet_consumption_by_vehicle_type.items():
+        if vtype not in fleet_specific_consumption_by_vehicle_type:
+            fleet_specific_consumption_by_vehicle_type.update({vtype: {}})
+        for medium_name, energy in consumption.items():
+            fleet_specific_consumption_by_vehicle_type[vtype].update(
+                {medium_name: energy/fleet.mileage[vtype]}
+            )
+
+    res.update({'fleet_specific_consumption_by_vehicle_type': fleet_specific_consumption_by_vehicle_type})
+
+    # Vehicle energy states
+    res.update({'num_vehicles_by_energy_state': CalcDict({'ok': 0,
+                                                          'critical': 0,
+                                                          'invalid': 0})})
+    for vehicle in fleet.get_all():
+        if vehicle.soc_was_valid and not vehicle.soc_was_critical:
+            # SoC OK
+            res['num_vehicles_by_energy_state']['ok'] += 1
+        elif vehicle.soc_was_valid and vehicle.soc_was_critical:
+            # SoC critical
+            res['num_vehicles_by_energy_state']['critical'] += 1
+        elif not vehicle.soc_was_valid:
+            res['num_vehicles_by_energy_state']['invalid'] += 1
+
+    # Max. number of vehicles charging per facility (EXCEPT depots -
+    # these are treated separately)
+    cf_eval = {
+        'charging_points': {},
+        'charging_segments': {}
+    }
+    if charging_network is not None:
+        for id, charging_point in \
+                charging_network.get_all_points_by_ID().items():
+            cf_eval['charging_points'].update({
+                id: {
+                    'location': charging_point.location,
+                    'max_occupation': charging_point.max_occupation
+                }
+            })
+        for id, charging_segment in \
+                charging_network.get_all_segments_by_ID().items():
+            cf_eval['charging_segments'].update({
+                id: {
+                    'location': charging_segment.location,
+                    'max_occupation': charging_segment.max_occupation
+                }
+            })
+    res.update({'charging_points': cf_eval['charging_points'],
+                'charging_segments': cf_eval['charging_segments']})
+    return res
+
+class Plot:
+    """Base class for plots.
+
+    Dominic Jefferies"""
+
+    def __init__(self, figuresize=None, show=False, linewidth=1.0):
+        self.figureSize = figuresize
+        self.figure, self.axes = plt.subplots(figsize=self.figureSize
+            if self.figureSize else global_constants['DEFAULT_PLOT_SIZE'],
+            linewidth=linewidth)
+        # it wont show an empty plot if plt.show() is called before any data is added to the plot
+        # doesnt make sense in the constructor?!
+        if show:
+            plt.interactive(True)
+            plt.show()
+        else:
+            plt.interactive(False)  # just to be sure...
+
+    def save(self, filename, formats=None):
+        if not formats:
+            # default, save as png
+            self.figure.savefig(filename + '.png')
+        else:
+            if 'png' in formats:
+                self.figure.savefig(filename + '.png')
+            if 'pdf' in formats:
+                self.figure.savefig(filename + '.pdf')
+        plt.close(self.figure)
+        # if you dont want to show it and save is not called, it will be shown
+
+
+class LinePlot(Plot):
+    """Class for a line plot that allows easy plotting of time series. After
+    creating a LinePlot object, any modification can be made by manipulating the
+    self.figure and self.axes attributes as per the matplotlib documentation
+    (e.g., set axis limits, ...).
+
+    Dominic Jefferies
+    """
+
+    def __init__(self, title=None, xlabel=None, ylabel=None, timelabel=None,
+                 ylim=None, yticks=None, figuresize=None, show=False,
+                 linewidth=1.0):
+        super().__init__(figuresize=figuresize, show=show, linewidth=linewidth)
+        self.linewidth = linewidth
+        self.xlabel = xlabel
+        self.ylabel = ylabel
+        self.title = title
+        self.axes.set(xlabel=self.xlabel, ylabel=self.ylabel)
+        if title is not None:
+            self.axes.set(title=self.title)
+        if ylim is not None:
+            self.axes.set_ylim(ylim)
+        if yticks is not None:
+            self.axes.set_yticks(yticks)
+        self.axes.grid(b=True, zorder=0, which='both')
+        # self.axes.legend(frameon=True)
+
+        if timelabel == 'hours':
+            majorLocator = mdates.HourLocator(byhour=range(0, 24, 2))
+            minorLocator = mdates.HourLocator()
+            majorFormat = mdates.DateFormatter('%H')
+            self.axes.xaxis.set_major_locator(majorLocator)
+            self.axes.xaxis.set_minor_locator(minorLocator)
+            self.axes.xaxis.set_major_formatter(majorFormat)
+
+
+        # other timelabel configurations to be added when needed
+
+    def add_series(self, *data, xerror = None, yerror = None, linespec=None,
+                   label=None, step=False):
+        """Add a series to the plot. Data can be specified as an x, y pair
+        or as y values only. If you supply a Pandas series as a single
+        argument, the index will be used as x values. When step=True,
+        you MUST supply x and y arguments (matplotlib limitation). To plot a
+        Pandas timeseries ts as a step plot, pass it as
+        'ts.index.values, ts'.
+
+        If a label is specified, it will automatically be added as a legend
+        entry. Series with label=None are omitted in the legend.
+        """
+        if len(data) < 1:
+            raise TypeError('You must provide at least one argument '
+                            'containing plot data.')
+
+        if step and len(data) < 2:
+            raise TypeError('When using step, always supply x and y data.')
+
+        xdata = data[0] if len(data) > 1 else None
+        ydata = data[0] if len(data) == 1 else data[1]
+
+        if xerror or yerror:
+            if step:
+                raise TypeError('Step plots with error bars currently '
+                                'not possible.')
+            else:
+                if xdata is not None:
+                    if linespec:
+                        self.axes.errorbar(xdata, ydata, linespec, label=label)
+                    else:
+                        self.axes.errorbar(xdata, ydata, label=label)
+                else:
+                    raise TypeError('When plotting error bars, x and y '
+                                    'data must each be supplied '
+                                    'explicitly.')
+        else:
+            if step:
+                if linespec:
+                    self.axes.step(xdata, ydata, linespec, label=label,
+                                   where='post', linewidth = self.linewidth)
+                else:
+                    self.axes.step(xdata, ydata, label=label, where='post', linewidth = self.linewidth)
+            else:
+                if xdata is not None:
+                    if linespec:
+                        self.axes.plot(xdata, ydata, linespec, label=label, linewidth=self.linewidth)
+                    else:
+                        self.axes.plot(xdata, ydata, label=label, linewidth=self.linewidth)
+                else:
+                    if linespec:
+                        self.axes.plot(ydata, linespec, label=label, linewidth=self.linewidth)
+                    else:
+                        self.axes.plot(ydata, label=label, linewidth=self.linewidth)
+
+    def add_rectangles(self, xdata, ydata, height=0.5, color='red', fill=True):
+        """ adds rectangles according to values specified in xdata, ydata
+
+        Tobias Altmann"""
+        def add_rectangle(point, width, height, color, fill):
+            self.axes.add_patch(
+                patches.Rectangle(
+                    point, width, height, fill=fill, color=color
+                )
+            )
+
+        self.add_series(xdata, ydata, step=True)
+        values = [y for y in ydata if not math.isnan(y)]
+        maxVal = max(values) if values else None
+        if maxVal:
+            self.axes.set_ylim([0,maxVal+1])
+        nan_indices = sorted([i for i in range(len(ydata)) if math.isnan(ydata[i])])
+        value_indices = sorted(list(set(range(len(ydata))) - set(nan_indices)))
+        while value_indices:
+            index = value_indices.pop(0)
+            nan_indices = [i for i in nan_indices if i > index]
+            yval = ydata[index]
+            xval = xdata[index]
+            index = nan_indices.pop(0) if nan_indices else len(xdata) - 1
+            width = xdata[index] - xval
+            add_rectangle((xval, yval - height / 2), width, height, color, fill)
+            value_indices = [i for i in value_indices if i > index]
+        self.axes.lines.pop(0)
+
+
+class PiePlot(Plot):
+    """Class for a pie plot with automatic pie segment labelling of the form
+    'x (y%)'.
+
+    Dominic Jefferies
+    """
+
+    def __init__(self, pie_sizes, axes=None, labels=None, colors=None, title=None,
+                 value_labels='abs_pct', rotatelabels=False, legend=True, show_labels=False, show_values=True,
+                 figuresize=None, show=False):
+        super().__init__(figuresize=figuresize, show=show)
+        self.figure.set_tight_layout(True)
+        self.pie_sizes = pie_sizes
+        self.labels = labels
+        self.colors = colors
+        self.title = title
+        if axes is not None:
+            self.axes = axes
+        self.axes.set(title=self.title)
+
+        if show_labels:
+            if show_values:
+                self.axes.pie(self.pie_sizes, colors=self.colors,
+                              labels=self.labels,
+                              rotatelabels=rotatelabels,
+                              autopct=self.pie_labels(self.pie_sizes, value_labels),
+                              startangle=90,
+                              counterclock=False)
+            else:
+                self.axes.pie(self.pie_sizes, colors=self.colors,
+                              labels=self.labels,
+                              rotatelabels=rotatelabels,
+                              startangle=90,
+                              counterclock=False)
+        else:
+            if show_values:
+                self.axes.pie(self.pie_sizes, colors=self.colors,
+                              autopct=self.pie_labels(self.pie_sizes, value_labels),
+                              startangle=90,
+                              counterclock=False)
+            else:
+                self.axes.pie(self.pie_sizes, colors=self.colors,
+                              startangle=90,
+                              counterclock=False)
+        if legend:
+            self.axes.legend(self.labels, frameon=True)
+
+        self.axes.axis('equal')  # make pie a circle, not an oval
+
+    @staticmethod
+    def pie_labels(values, value_labels):
+        def autopct(pct):
+            total = sum(values)
+            val = int(round(pct * total / 100.0))
+            if val == 0:
+                return None
+            else:
+                if value_labels == 'abs_pct':
+                    return '{v:d}\n({p:.0f}%)'.format(p=pct, v=val)
+                if value_labels == 'abs_pct_oneline':
+                    return '{v:d} ({p:.0f}%)'.format(p=pct, v=val)
+                elif value_labels == 'abs':
+                    return '{v:d}'.format(v=val)
+                elif value_labels == 'pct':
+                    return '{p:.0f}%'.format(p=pct)
+                elif value_labels is None:
+                    return None
+        return autopct
+
+
+class BrokenBarPlot(Plot):
+    def __init__(self, title=None, figuresize=None, show=False):
+        super().__init__(figuresize=figuresize, show=show)
+        self.title = title
+        self.axes.set(title=self.title)
+
+
+class BrokenBarContourPlot(Plot):
+    def __init__(self, title=None, figuresize=None, show=False):
+        super().__init__(figuresize=figuresize, show=show)
+        self.title = title
+        self.axes.set(title=self.title)
+
+
+def convert_timelabels_to_hours(axes,base=2):
+    major_locator = ticker.MultipleLocator(base=base * 3600)
+    axes.xaxis.set_major_locator(major_locator)
+    minor_locator = ticker.MultipleLocator(base=1 * 3600)
+    axes.xaxis.set_minor_locator(minor_locator)
+    axes.xaxis.remove_overlapping_locs = True
+    x_ticks_major = axes.xaxis.get_majorticklocs()
+    x_ticks_minor = axes.xaxis.get_minorticklocs()
+    x_ticks_major_timestamps = [pd.Timestamp(tick, unit='s') for tick
+                                in x_ticks_major]
+    # x_ticks = axes.get_xticks()
+    # x_tick_labels = [
+    #     '{3:02n}:{4:02n}'.format(
+    #         t.year, t.month, t.day, t.hour, t.minute, t.second) for t in
+    #     x_ticks_timestamps]
+    x_tick_labels = ['{:.0f}'.format(t.hour) for t in x_ticks_major_timestamps]
+    axes.set_xticks(x_ticks_major)
+    axes.set_xticklabels(x_tick_labels)
+    axes.set_xticks(x_ticks_minor, minor=True)
+
+
+def plot_retriever_data(retriever_data, *args, title=None, hour_xlabels=True,
+                        xlabel='Time',
+                        ylabel=None, legend_loc=None, ylim=None, yticks=None,
+                        yscale=1, show=False, save=True,
+                        filename='plot', formats=None):
+    # retriever_data is expected to be a dict with the keys 'params' and
+    # 'log_data' (gathered by LogRetriever)
+    # args is any number of logging attribute names to be plotted
+    plot = LinePlot(title=title, xlabel=xlabel, ylabel=ylabel, ylim=ylim,
+                    yticks=yticks, figuresize=None, show=show,
+                    linewidth=1.0)
+    for arg in args:
+        data = retriever_data['log_data'][arg]
+        xval = np.array(list(data['values'].keys()))
+        yval = np.array(list(data['values'].values()))*yscale
+        label = data['name'] + ' [' + data['unit'] + ']'
+        step = True
+        # +++ DEBUG +++
+        # Hardcoded step=True to avoid visualisation errors; find proper
+        # fix later
+        # step = data['discrete']
+        plot.add_series(xval, yval, label=label, step=step)
+
+    if legend_loc is not None:
+        plot.axes.legend(frameon=True, loc=legend_loc)
+
+    if hour_xlabels == True:
+        convert_timelabels_to_hours(plot.axes)
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+
+    return plot
+
+
+def plot_retriever_data_counter(retriever_data, attribute, includetotal=True,
+                                title=None, hour_xlabels=True,
+                                xlabel='Time', ylabel=None,
+                                ylim=None, yticks=None,
+                                legend_loc=None, show=False,
+                                save=True,
+                                filename='plot', formats=None):
+    # retriever_data is expected to be a dict with the keys 'params' and
+    # 'log_data' (gathered by LogRetriever)
+    # args is any number of logging attribute names to be plotted
+    plot = LinePlot(title=title, xlabel=xlabel, ylabel=ylabel, ylim=ylim,
+                    yticks=yticks, figuresize=None, show=show,
+                    linewidth=1.0)
+
+    # Gather keys
+    keys = []
+    for val in retriever_data['log_data'][attribute]['values'].values():
+        if not isinstance(val, Counter):
+            raise TypeError('attribute passed to plot_logger_data_counter must '
+                            'contain Counter objects')
+        for key in list(val):
+            if not key in keys:
+                keys.append(key)
+
+    # Compile and plot data series for each key
+    xdata = list(retriever_data['log_data'][attribute]['values'].keys())
+    for key in keys:
+        ydata = []
+        for data_point in retriever_data['log_data'][attribute]['values'].values():
+            ydata.append(data_point[key])
+
+        plot.add_series(xdata, ydata, label=key, step=True)
+
+    # add total
+    if includetotal:
+        ydata = []
+        for data_point in retriever_data['log_data'][attribute]['values'].values():
+            ydata.append(sum(data_point.values()))
+        plot.add_series(xdata, ydata, label='total', step=True)
+
+    if legend_loc is not None:
+        plot.axes.legend(frameon=True, loc=legend_loc)
+
+    if hour_xlabels == True:
+        convert_timelabels_to_hours(plot.axes)
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+
+    return plot
+
+
+def plot_soc(retriever_data, title=None, xlabel='Time', ylabel='SoC',
+             show_soc_limits=['max', 'min', 'reserve'],
+             hour_xlabels=True, figuresize=None,
+             show=False, save=True, filename='soc', formats=None):
+    # retriever_data is expected to be a dict with the keys 'params' and
+    # 'log_data' (gathered by LogRetriever for a single object)
+
+    plot = LinePlot(title=title, xlabel=xlabel, ylabel=ylabel,
+                    figuresize=figuresize, show=show, linewidth=1.0)
+    if 'battery' in retriever_data['params']['vehicle_type'].params:
+    # if retriever_data['params']['vehicle_type'].architecture \
+    #         in ['bus_electric_constantaux', 'bus_electric_hvac',
+    #             'bus_electric_hvac_dualmedia',
+    #             'bus_electric_valeo_hvac_electric',
+    #             'bus_electric_valeo_hvac_diesel',
+    #             'bus_electric_konvekta_hvac_electric',
+    #             'bus_electric_konvekta_hvac_diesel',
+    #             'bus_electric_konvekta_hvac_electric_diesel']:
+        # All electric vehicles have defined SoC limits (other vehicles don't)
+        soc_limits = True
+        soc_max_primary = retriever_data['params']['vehicle_type'].params['battery']\
+            ['soc_max']
+        soc_min_primary = retriever_data['params']['vehicle_type'].params['battery'] \
+            ['soc_min']
+        soc_reserve_primary = retriever_data['params']['vehicle_type'].params['battery'] \
+            ['soc_reserve']
+    else:
+        soc_limits = False
+
+    if retriever_data['params']['vehicle_type'].architecture in \
+        ['bus_electric_hvac_dualmedia', 'bus_electric_valeo_hvac_diesel',
+         'bus_electric_konvekta_hvac_electric_diesel',
+         'bus_electric_konvekta_hvac_diesel']:
+        # Vehicle architectures with secondary storage
+        has_secondary_storage = True
+    else:
+        has_secondary_storage = False
+
+    if has_secondary_storage:
+        time_seconds_primary = \
+            list(retriever_data['log_data']['soc_primary']['values'].keys())
+        soc_primary = \
+            list(retriever_data['log_data']['soc_primary']['values'].values())
+        label_primary = 'Primary'
+    else:
+        time_seconds_primary = \
+            list(retriever_data['log_data']['soc_primary']['values'].keys())
+        soc_primary = \
+            list(retriever_data['log_data']['soc_primary']['values'].values())
+        label_primary = None
+
+    t_min = time_seconds_primary[0]
+    t_max = time_seconds_primary[-1]
+
+    plot.add_series(time_seconds_primary, soc_primary, label=label_primary)
+    if soc_limits:
+        if 'max' in show_soc_limits:
+            plot.add_series([t_min, t_max],  [soc_max_primary, soc_max_primary],
+                            linespec='--k')
+        if 'min' in show_soc_limits:
+            plot.add_series([t_min, t_max], [soc_min_primary, soc_min_primary],
+                            linespec='--k')
+        if 'reserve' in show_soc_limits:
+            plot.add_series([t_min, t_max],
+                            [soc_reserve_primary, soc_reserve_primary],
+                            linespec='--k')
+
+    if has_secondary_storage:
+        time_seconds_secondary = \
+            list(retriever_data['log_data']['soc_secondary']['values'].keys())
+        soc_secondary = \
+            list(retriever_data['log_data']['soc_secondary']['values'].values())
+        label_secondary = 'Secondary'
+        plot.add_series(time_seconds_secondary, soc_secondary,
+                        label=label_secondary)
+        plot.axes.legend(frameon=True, loc='upper right')
+
+    plot.axes.set(ylim=[-0.1, 1.1])
+
+    if hour_xlabels == True:
+        convert_timelabels_to_hours(plot.axes)
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+
+    return plot
+
+
+def plot_soc_with_trip_info(logger_data, title=None, show=False, save=True, filename='soc', formats=None,
+                            figuresize=None, fontsize=8):
+    """This plot is based on the plot_soc() method. The figure object from plot_soc() will be modified to have \
+     additional information about the bus stations to be plotted in the background of the SoC curve as rectangles with \
+     the names vertically on the X-Axis. Saving and showing the figure is optional
+
+    :param logger_data:
+    :param title: text to use for the title
+    :param show: if True, the plot will be shown in a window
+    :param save: if True, save the current figure
+    :param filename: filename with the Path
+    :param formats: the file format, e.g. 'png', 'pdf', 'svg', ...
+    :param figuresize: (float, float), width, height in centimeter
+    :param fontsize: size in points
+    """
+    plot = plot_soc(logger_data, title=title, show=show, save=False, filename=filename, formats=formats,
+                    figuresize=figuresize)
+    plot.figure.set_tight_layout(False)
+
+    trips = OrderedDict()
+    pauses = []
+    for schedule in logger_data['mission_list']:
+        for trip in schedule.root_node.get_children():
+            trips.update({(trip.departure.time,
+                           trip.arrival.time - trip.departure.time): trip.origin.name})
+            if trip.get_children()[-1].pause != 0:
+                pauses.append((trip.get_children()[-1].arrival.time, trip.get_children()[-1].pause))
+    plot.axes.broken_barh(pauses, yrange=(0, 1), color='#CD5C5C')#the old red color was #ff8072
+    plot.axes.broken_barh(trips.keys(), yrange=(0, 1), color=('#d3d3d3', '#778899'))
+    figure_width, figure_height = plot.figure.get_size_inches()
+    margins_rel = {
+        'left': cm2in(1.3) / figure_width,
+        'right': 1 - cm2in(0.3) / figure_width,
+        'top': 1 - cm2in(0.8) / figure_height,
+        'bottom': cm2in(6) / figure_height}
+
+    plot.figure.subplots_adjust(
+        bottom=margins_rel['bottom'], top=margins_rel['top'],
+        left=margins_rel['left'], right=margins_rel['right'])
+
+    for trip, station_name in trips.items():
+        no_pause = True
+        for pause in pauses:
+            if trip[0] == pause[0] + pause[1]:
+                plot.axes.annotate(station_name, (trip[0], 0), xytext=(trip[0], -35),
+                                   textcoords=('data', 'axes points'), fontsize=fontsize, rotation='vertical',
+                                   horizontalalignment='center', verticalalignment='top')
+                no_pause = False
+                break
+        if no_pause:
+            plot.axes.annotate(station_name, (trip[0], 0), xytext=(trip[0], -35), textcoords=('data', 'axes points'),
+                               fontsize=fontsize, rotation='vertical', horizontalalignment='center',
+                               verticalalignment='top')
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+
+
+def plot_energy_balance_pie(retriever_data, axes=None, title=None,
+                            label_ok='OK',
+                            label_critical='critical',
+                            label_invalid='invalid',
+                            value_labels='abs_pct',
+                            legend=True, show_labels=False,
+                            figuresize=None,
+                            show=False, save=True,
+                            filename='energy_balance', formats=None):
+    # retriever_data is expected to be a dict with multiple vehicle data
+    # generated by LogRetriever (i.e. {vehicle_ID: {'params': ...,
+    #                                               'log_data': ...}}
+    # Determine states per vehicle:
+    # - if soc_valid = False at any time: impossible
+    # - if soc_valid = True AND soc_critical = True at any point: critical
+    # - otherwise: valid
+    num_ok = 0
+    num_critical = 0
+    num_invalid = 0
+    for id, vehicle_data in retriever_data.items():
+        if False in vehicle_data['log_data']['soc_valid']['values'].values():
+            num_invalid += 1
+        elif True in [entry[0] and entry[1] for entry in
+                      zip_longest(vehicle_data['log_data']['soc_valid']['values'].values(),
+                                  vehicle_data['log_data']['soc_critical']['values'].values())]:
+            num_critical += 1
+        else:
+            num_ok += 1
+
+    sizes = [num_ok, num_critical, num_invalid]
+    colors = ['mediumaquamarine', 'khaki', 'darksalmon']
+
+    labels = [label_ok, label_critical, label_invalid]
+    plot = PiePlot(sizes, axes=axes, labels=labels, value_labels=value_labels,
+                   figuresize=figuresize, legend=legend, show_labels=show_labels,
+                   title=title, colors=colors, show=show)
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+
+    return plot
+
+
+def get_schedules_by_vehicle_energy_state(retriever_data):
+    """Find out which schedules cause vehicles' SoC to become critical
+    or invalid. Returns a dict with vehicle IDs as keys and the schedules
+    served as values.
+
+    retriever_data is expected to be a dict with multiple vehicle data
+    generated by LogRetriever (i.e. {vehicle_ID: {'params': ...,
+    'log_data': ...}}"""
+    schedules_by_state = {'ok': {},
+                          'critical': {},
+                          'invalid': {}}
+    for id, vehicle_data in retriever_data.items():
+        if False in vehicle_data['log_data']['soc_valid']['values'].values():
+            schedules_by_state['invalid'].update({id: copy.copy(vehicle_data['mission_list'])})
+        elif True in [entry[0] and entry[1] for entry in
+                      zip_longest(vehicle_data['log_data']['soc_valid']['values'].values(),
+                                  vehicle_data['log_data']['soc_critical']['values'].values())]:
+            schedules_by_state['critical'].update({id: copy.copy(vehicle_data['mission_list'])})
+        else:
+            schedules_by_state['ok'].update({id: copy.copy(vehicle_data['mission_list'])})
+    return schedules_by_state
+
+# def get_schedules_by_vehicle_energy_state(retriever_data):
+#     """Find out which schedules cause vehicles' SoC to become critical
+#     or invalid.
+#
+#     retriever_data is expected to be a dict with multiple vehicle data
+#     generated by LogRetriever (i.e. {vehicle_ID: {'params': ...,
+#     'log_data': ...}}"""
+#     schedules_by_state = {'ok': [],
+#                           'critical': [],
+#                           'invalid': []}
+#     for id, vehicle_data in retriever_data.items():
+#         if False in vehicle_data['log_data']['soc_valid']['values'].values():
+#             schedules_by_state['invalid'] += copy.copy(vehicle_data['mission_list'])
+#         elif True in [entry[0] and entry[1] for entry in
+#                       zip_longest(vehicle_data['log_data']['soc_valid']['values'].values(),
+#                                   vehicle_data['log_data']['soc_critical']['values'].values())]:
+#             schedules_by_state['critical'] += copy.copy(vehicle_data['mission_list'])
+#         else:
+#             schedules_by_state['ok'] += copy.copy(vehicle_data['mission_list'])
+#     return schedules_by_state
+
+
+def plot_schedule_time(schedule_container, separate_trips=False, display_lines=None,
+                       title=None, xlabel='Time (hours)', ylabel='Schedule ID', width=None,
+                       show=False, save=False, filename='schedule_time', formats=None):
+    """
+
+    :param schedule_container: eflips.schedule.ScheduleContainer object
+    :param separate_trips: True: display each trip, False: display whole schedule
+    :param display_lines: 'bar': print line in bar, 'legend': show line in legend or None
+    :param title:
+    :param xlabel:
+    :param ylabel:
+    :param width:
+    :param show:
+    :param save:
+    :param filename:
+    :param formats:
+    :return: BrokenBarPlot object
+    """
+    bar_height = 2
+    bar_distance = 1
+
+    plot_height = cm2in(len(schedule_container.get_all()) * 0.5 + 2)
+    plot_width = global_constants['DEFAULT_PLOT_SIZE'][0] if width is None else width
+    plot = BrokenBarPlot(figuresize=(plot_width, plot_height))
+
+    y_ticks = [bar_distance + bar_height/2]
+    schedule_ids = []
+    i = 0
+    colors = ['tab:blue', 'tab:green', 'tab:red', 'tab:purple',
+              'tab:brown', 'tab:pink', 'tab:gray', 'tab:olive', 'tab:cyan']
+    color_line = {}
+    j = 0
+    for schedule in schedule_container.get_all():
+        for trip in schedule.root_node.children:
+            if trip.line not in color_line.keys():
+                color_line[trip.line] = colors[j % len(colors)]
+                j += 1
+    displayed_lines = []
+    if separate_trips:
+        for schedule in sorted(schedule_container.get_all(), key=lambda schedule: schedule.root_node.ID):
+            passenger_trips = {trip.line: [] for trip in schedule.root_node.children}
+            empty_trips = []
+
+            for trip in schedule.root_node.children:
+                x = trip.departure.getSeconds()
+                x_width = trip.arrival.getSeconds() - x
+                trip_range = (x, x_width)
+
+                if trip.trip_type == 'emptyTrip':
+                    empty_trips.append(trip_range)
+                if trip.trip_type == 'passengerTrip':
+                    passenger_trips[trip.line].append(trip_range)
+                    if display_lines == 'bar':
+                        plot.axes.text(x, y_ticks[i], trip.line, fontsize=6, fontweight='bold', color='white')
+
+            plot.axes.broken_barh(empty_trips, (y_ticks[i] - bar_height / 2, bar_height), facecolor='orange')
+            for line, trips in passenger_trips.items():
+                if line not in displayed_lines:
+                    plot.axes.broken_barh(trips, (y_ticks[i] - bar_height / 2, bar_height), label=line,
+                                          color=color_line[line])
+                    displayed_lines.append(line)
+                else:
+                    plot.axes.broken_barh(trips, (y_ticks[i] - bar_height / 2, bar_height), color=color_line[line])
+
+            schedule_ids.append(schedule.root_node.ID)
+            y_ticks.append(y_ticks[i] + bar_distance + bar_height)
+            i += 1
+    else:
+        for schedule in sorted(schedule_container.get_all(), key=lambda schedule: schedule.root_node.ID):
+            trips = schedule.root_node.children
+            passenger_trips = {trip.line: [] for trip in trips}
+            empty_trips = []
+            trip_type = trips[0].trip_type
+
+            line = trips[0].line if hasattr(trips[0], 'line') else '0'
+            x = trips[0].departure.getSeconds()
+            for j in range(1, len(trips)):
+                next_line = trips[j].line if hasattr(trips[j], 'line') else '0'
+                if trips[j].trip_type != trip_type or next_line != line:
+                    x_width = trips[j - 1].arrival.getSeconds() - x
+                    trip_range = (x, x_width)
+
+                    if trip_type == 'emptyTrip':
+                        empty_trips.append(trip_range)
+                    if trip_type == 'passengerTrip':
+                        passenger_trips[line].append(trip_range)
+                        if display_lines == 'bar':
+                            plot.axes.annotate(line, xy=(x + x_width / 2, y_ticks[i]), va='center', ha='center',
+                                               fontsize=6, fontweight='bold', color='white')
+                    x = trips[j].departure.getSeconds()
+                    trip_type = trips[j].trip_type
+                    line = next_line
+
+            x_width = trips[len(trips) - 1].arrival.getSeconds() - x
+            trip_range = (x, x_width)
+
+            if trip_type == 'emptyTrip':
+                empty_trips.append(trip_range)
+            if trip_type == 'passengerTrip':
+                passenger_trips[line].append(trip_range)
+                if display_lines == 'bar':
+                    plot.axes.annotate(line, xy=(x + x_width / 2, y_ticks[i]), va='center', ha='center',
+                                       fontsize=6, fontweight='bold', color='white')
+
+            plot.axes.broken_barh(empty_trips, (y_ticks[i] - bar_height / 2, bar_height), color='orange')
+            for line, trips in passenger_trips.items():
+                if line not in displayed_lines:
+                    plot.axes.broken_barh(trips, (y_ticks[i] - bar_height / 2, bar_height), label=line,
+                                          color=color_line[line])
+                    displayed_lines.append(line)
+                else:
+                    plot.axes.broken_barh(trips, (y_ticks[i] - bar_height / 2, bar_height), color=color_line[line])
+
+            schedule_ids.append(schedule.root_node.ID)
+            y_ticks.append(y_ticks[i] + bar_distance + bar_height)
+            i += 1
+
+    del y_ticks[len(y_ticks)-1]
+    plot.axes.set_title(title)
+    plot.axes.set_xlabel(xlabel)
+    plot.axes.set_ylabel(ylabel)
+    plot.axes.set_yticks(y_ticks)
+    plot.axes.set_yticklabels(schedule_ids)
+    plot.axes.grid(which='major', axis='x')
+    plot.axes.set_axisbelow(True)
+    if display_lines == 'legend':
+        plot.axes.legend(frameon=True, loc='upper left')
+
+    convert_timelabels_to_hours(plot.axes)
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+
+    return plot
+
+
+def plot_schedule_distance(schedule_container, show_xticks=True, add_bar_labels=True, sort_by_distance=True,
+                           title=None, xlabel=None, ylabel='Distance (km)', figuresize=None,
+                           show=False, save=False, filename='schedule_distance', formats=None):
+    """
+
+    :param schedule_container:
+    :param show_xticks:
+    :param add_bar_labels:
+    :param sort_by_distance:
+    :param title:
+    :param xlabel:
+    :param ylabel:
+    :param figuresize:
+    :param show:
+    :param save:
+    :param filename:
+    :param formats:
+    :return: Plot object
+    """
+
+    plot = Plot(figuresize=figuresize, show=show)
+    if sort_by_distance == True:
+        schedule_list = sorted(schedule_container.get_all(), key=lambda schedule: schedule.root_node.distance)
+    else:
+        schedule_list = sorted(schedule_container.get_all(), key=lambda schedule: schedule.root_node.ID)
+    IDs = [schedule.root_node.ID for schedule in schedule_list]
+    distances = [schedule.root_node.distance for schedule in schedule_list]
+    xticks = np.arange(len(schedule_list))
+    bar = plot.axes.bar(xticks, distances)
+
+    if show_xticks:
+        plot.axes.set_xticks(xticks)
+        plot.axes.set_xticklabels(IDs)
+    else:
+        plot.axes.set_xticks([])
+
+    plot.axes.set_title(title)
+    plot.axes.set_ylabel(ylabel)
+    plot.axes.set_xlabel(xlabel)
+    plot.axes.grid(which='major', axis='y')
+    plot.axes.set_axisbelow(True)
+
+    # Add value labels to bars:
+    if add_bar_labels:
+        for rect in bar:
+            rect_height = rect.get_height()
+            plot.axes.text(rect.get_x() + rect.get_width()/2,
+                           rect_height+0.1, '%d' % rect_height,
+                           ha='center', va='bottom', fontsize=6,
+                           fontweight='bold', color='black')
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+
+    return plot
+
+
+def plot_pause_durations_histogram(trip_list, trip_type='passengerTrip',
+                                   bins=None,
+                                   title='Pause durations',
+                                   xlabel='Duration (min)', ylabel='No. trips',
+                                   figuresize=None,
+                                   show=False, save=False,
+                                   filename='plot_pause_durations_histogram',
+                                   formats=None):
+
+    pauses = []
+    for trip in trip_list:
+        if trip.trip_type == trip_type:
+            pauses.append(trip.pause/60)  # minutes
+
+    plot = Plot(figuresize=figuresize, show=show)
+    # if bins is None:
+    #     n, bins, patches = plot.axes.hist(pauses)
+    # else:
+    n, bin_edges, patches = plot.axes.hist(pauses, bins=bins,
+                                           rwidth=0.95)
+
+    plot.axes.set_title(title)
+    plot.axes.set_ylabel(ylabel)
+    plot.axes.set_xlabel(xlabel)
+    plot.axes.set_xticks(bin_edges)
+    plot.axes.grid(which='major', axis='y')
+    plot.axes.set_axisbelow(True)
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+
+    return plot
+
+
+def plot_vehicles_ignition_on(retriever_data,
+                              title=None, xlabel=None, ylabel='Vehicle-ID', figuresize=None,
+                              show=False, save=False, filename='vehicles_ignition_on', formats=None):
+    """
+
+    :param retriever_data:
+    :param title:
+    :param xlabel:
+    :param ylabel:
+    :param figuresize:
+    :param show:
+    :param save:
+    :param filename:
+    :param formats:
+    :return:
+    """
+    bar_height = 15
+    bar_distance = 5
+
+    plot = BrokenBarPlot(title=title, figuresize=figuresize)
+
+    y_ticks = [bar_distance + bar_height/2]
+
+    for vehicle_id, vehicle in retriever_data['vehicles'].items():
+        current_value = False
+        for timestamp, value in vehicle['log_data']['ignition_on']['values'].items():
+            if value and not current_value:  # off-on
+                x = timestamp
+                current_value = True
+            elif not value and current_value:  # on-off
+                x_width = timestamp - x
+
+                plot.axes.broken_barh([(x, x_width)], (y_ticks[vehicle_id-1] - bar_height/2, bar_height))
+
+                current_value = False
+        y_ticks.append(y_ticks[vehicle_id-1] + bar_distance + bar_height)
+
+    del y_ticks[len(y_ticks) - 1]
+    plot.axes.set(title=title, xlabel=xlabel, ylabel=ylabel)
+    plot.axes.set_yticks(y_ticks)
+    plot.axes.set_yticklabels(retriever_data['vehicles'].keys())
+
+    convert_timelabels_to_hours(plot.axes)
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+
+    return plot
+
+
+def translate_axes(title, title_key, xlabel, xlabel_key, ylabel, ylabel_key,
+                   language):
+
+    translate = global_constants['language'][language]['plots_network']
+    title_text = translate[title_key] if title == 'default' else title
+    xlabel_text = translate[xlabel_key] if xlabel == 'default' else xlabel
+    ylabel_text = translate[ylabel_key] if ylabel == 'default' else ylabel
+    return title_text, xlabel_text, ylabel_text
+
+
+def plot_vehicle_occupation(retriever_data, separate_trips=False, display=None,
+                            title=None, xlabel=None, ylabel=None, width=None,
+                            show=False, save=False, filename='vehicle_occupation', formats=None):
+    """
+
+    :param retriever_data:
+    :param separate_trips: display each trip or whole schedule - boolean
+    :param display: 'line_bar': print line in bar,
+                    'line_legend': show line in legend,
+                    'schedule': print schedule name (schedule id if no schedule name available) in bar or None
+    :param title:
+    :param xlabel:
+    :param ylabel:
+    :param width:
+    :param show:
+    :param save:
+    :param filename:
+    :param formats:
+    :return: BrokenBarPlot object
+    """
+    bar_height = 1
+    bar_distance = 0.7
+    fontsize = 10
+
+    plot_height = cm2in(len(retriever_data.values()) * (bar_height + bar_height) * 0.6 + 2)
+    plot_width = global_constants['DEFAULT_PLOT_SIZE'][0] if width is None else width
+    plot = BrokenBarPlot(title=title, figuresize=(plot_width, plot_height))
+
+    y_ticks = [bar_distance + bar_height / 2]
+    colors = ['tab:blue', 'tab:green', 'tab:red', 'tab:purple',
+              'tab:brown', 'tab:pink', 'tab:gray', 'tab:olive', 'tab:cyan']
+    color_line = {}
+    j = 0
+    for vehicle in retriever_data.values():
+        for schedule in vehicle['mission_list']:
+            for trip in schedule.root_node.children:
+                if trip.line not in color_line.keys():
+                    color_line[trip.line] = colors[j % len(colors)]
+                    j += 1
+    displayed_lines = []
+    if separate_trips:
+        for vehicle_id, vehicle in retriever_data.items():
+            for schedule in vehicle['mission_list']:
+                passenger_trips = {trip.line: [] for trip in schedule.root_node.children}
+                empty_trips = []
+
+                for trip in schedule.root_node.children:
+                    x = trip.departure.getSeconds()
+                    x_width = trip.arrival.getSeconds() - x
+                    trip_range = (x, x_width)
+
+                    if trip.trip_type == 'emptyTrip':
+                        empty_trips.append(trip_range)
+                    if trip.trip_type == 'passengerTrip':
+                        passenger_trips[trip.line].append(trip_range)
+                        if display == 'line_bar':
+                            plot.axes.annotate(trip.line, xy=(x + x_width / 2, y_ticks[vehicle_id - 1]),
+                                               va='center', ha='center', color='white', fontsize=fontsize)
+                        if display == 'schedule':
+                            text = schedule.root_node.name if hasattr(schedule.root_node, 'name') else schedule.root_node.ID
+                            plot.axes.annotate(text, xy=(x + x_width / 2, y_ticks[vehicle_id - 1]),
+                                               va='center', ha='center', color='white', fontsize=fontsize)
+
+                for line, trips in passenger_trips.items():
+                    if line not in displayed_lines:
+                        plot.axes.broken_barh(trips, (y_ticks[vehicle_id - 1] - bar_height / 2, bar_height), label=line, color=color_line[line])
+                        displayed_lines.append(line)
+                    else:
+                        plot.axes.broken_barh(trips, (y_ticks[vehicle_id - 1] - bar_height / 2, bar_height), color=color_line[line])
+                plot.axes.broken_barh(empty_trips, (y_ticks[vehicle_id - 1] - bar_height / 2, bar_height), color='orange')
+
+            y_ticks.append(y_ticks[vehicle_id - 1] + bar_distance + bar_height)
+    else:
+        y_tick_labels = []
+        i = 0
+        for vehicle_id, vehicle in retriever_data.items():
+            for schedule in vehicle['mission_list']:
+                trips = schedule.root_node.children
+                passenger_trips = {trip.line: [] for trip in schedule.root_node.children}
+                empty_trips = []
+                trip_type = trips[0].trip_type
+                line = trips[0].line if trip_type == 'passengerTrip' else None
+                x = trips[0].departure.getSeconds()
+                for j in range(1, len(trips)):
+                    if trips[j].trip_type != trip_type or trips[j].line != line:
+                        x_width = trips[j - 1].arrival.getSeconds() - x
+                        trip_range = (x, x_width)
+
+                        if trip_type == 'emptyTrip':
+                            empty_trips.append(trip_range)
+                        if trip_type == 'passengerTrip':
+                            passenger_trips[line].append(trip_range)
+                            if display == 'line_bar':
+                                plot.axes.annotate(line, xy=(x + x_width / 2, y_ticks[vehicle_id - 1]),
+                                                   va='center', ha='center', color='white', fontsize=fontsize)
+                            if display == 'schedule':
+                                text = schedule.root_node.name if hasattr(schedule.root_node,
+                                                                          'name') else schedule.root_node.ID
+                                plot.axes.annotate(text, xy=(x + x_width / 2, y_ticks[vehicle_id - 1]),
+                                                   va='center', ha='center', color='white', fontsize=fontsize)
+
+                        x = trips[j].departure.getSeconds()
+                        trip_type = trips[j].trip_type
+                        line = trips[j].line if trip_type == 'passengerTrip' else None
+
+                x_width = trips[len(trips) - 1].arrival.getSeconds() - x
+                trip_range = (x, x_width)
+
+                if trip_type == 'emptyTrip':
+                    empty_trips.append(trip_range)
+                if trip_type == 'passengerTrip':
+                    passenger_trips[line].append(trip_range)
+                    if display == 'line_bar':
+                        plot.axes.annotate(line, xy=(x + x_width / 2, y_ticks[vehicle_id - 1]),
+                                           va='center', ha='center', color='white')
+                        if display == 'schedule':
+                            text = schedule.root_node.name if hasattr(schedule.root_node, 'name') else schedule.root_node.ID
+                            plot.axes.annotate(text, xy=(x + x_width / 2, y_ticks[vehicle_id - 1]),
+                                               va='center', ha='center', color='white')
+
+                for line, trips in passenger_trips.items():
+                    if line not in displayed_lines:
+                        plot.axes.broken_barh(trips, (y_ticks[vehicle_id - 1] - bar_height / 2, bar_height), label=line, color=color_line[line])
+                        displayed_lines.append(line)
+                    else:
+                        plot.axes.broken_barh(trips, (y_ticks[vehicle_id - 1] - bar_height / 2, bar_height), color=color_line[line])
+                plot.axes.broken_barh(empty_trips, (y_ticks[vehicle_id - 1] - bar_height / 2, bar_height), color='orange')
+
+            y_ticks.append(y_ticks[i] + bar_distance + bar_height)
+            y_tick_labels.append(vehicle_id)
+            i += 1
+
+    del y_ticks[len(y_ticks) - 1]
+
+    plot.axes.set(title=title, xlabel=xlabel, ylabel=ylabel)
+    plot.axes.set_yticks(y_ticks)
+    plot.axes.set_yticklabels(retriever_data.keys())
+    plot.axes.grid(which='major', axis='x')
+    plot.axes.set_axisbelow(True)
+    if display == 'line_legend':
+        plot.axes.legend()
+
+    convert_timelabels_to_hours(plot.axes)
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+
+    return plot
+
+
+def plot_vehicles_distance(retriever_data, show_xticks=True,
+                           title=None, xlabel='Vehicle ID', ylabel='Distance [km]', figuresize=None,
+                           show=False, save=False, filename='vehicles_distance', formats=None):
+    """
+
+    :param retriever_data:
+    :param show_xticks:
+    :param title:
+    :param xlabel:
+    :param ylabel:
+    :param figuresize:
+    :param show:
+    :param save:
+    :param filename:
+    :param formats:
+    :return: Plot object
+    """
+    plot = Plot(figuresize=figuresize, show=show)
+    plot_list = []
+    for vehicle_id, vehicle in retriever_data.items():
+        dist = 0
+        for mission in vehicle['mission_list']:
+            dist += mission.root_node.distance
+        plot_list.append((vehicle_id, dist))
+    plot_list.sort(key=operator.itemgetter(1))
+
+    xticks = np.arange(len(plot_list))
+    plot.axes.bar(xticks, [i[1] for i in plot_list])
+    plot.axes.set(title=title, xlabel=xlabel, ylabel=ylabel)
+
+    if show_xticks:
+        plot.axes.set_xticks(xticks)
+        plot.axes.set_xticklabels([i[0] for i in plot_list])
+    else:
+        plot.axes.set_xticks([])
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+    return None
+
+
+def plot_vehicle_occupation_soc(retriever_data, display_schedules=False,
+                                title=None, xlabel=None, ylabel=None, width=None,
+                                show=False, save=False, filename='vehicle_occupation_soc', formats=None):
+    """
+    :param retriever_data:
+    :param display_schedules: True: print schedule name (schedule id if no schedule name available) on top of each bar
+    :param title:
+    :param xlabel:
+    :param ylabel:
+    :param width:
+    :param show:
+    :param save:
+    :param filename:
+    :param formats:
+    :return: BrokenBarContourPlot object
+    """
+    bar_height = 1
+    bar_distance = 0.7
+    # fontsize = 10
+    linewidth = 1.5
+    margin_top = 0.1
+    soc_points = 100
+
+    plot_height = cm2in(len(retriever_data.values()) * bar_height * 1.2 + 2)
+    plot_width = global_constants['DEFAULT_PLOT_SIZE'][0] if width is None else width
+    plot = BrokenBarContourPlot(figuresize=(plot_width, plot_height), title=title)
+
+    y_ticks = [bar_distance + bar_height/2]
+    i = 0
+    t_max = float('-inf')
+    t_min = float('inf')
+    for vehicle in retriever_data.values():
+        soc_primary = vehicle['log_data']['soc_primary']['values']
+        t = list(soc_primary.keys())
+        t_max = max(t_max, t[-1])
+        t_min = min(t_min, t[0])
+        axin = plot.axes.inset_axes([t[0], y_ticks[i] - bar_height / 2, t[-1] - t[0], bar_height],
+                                    transform=plot.axes.transData)
+        axin.set_axis_off()
+
+        Z = np.zeros((2, soc_points))
+        for j in range(Z.shape[1]):
+            Z[0][j] = _get_last_soc(soc_primary, t[0] + j * (t[-1] - t[0]) / Z.shape[1])
+        Z[1] = Z[0]
+        axin.contourf(Z, Z.shape[1], cmap=cm.RdYlGn, vmin=0.0, vmax=1.0)
+
+        y_ticks.append(y_ticks[i] + bar_distance + bar_height)
+        i += 1
+
+    first_day = TimeInfo.weekday['Sunday']
+    for vehicle in retriever_data.values():
+        for schedule in vehicle['mission_list']:
+            first_day = min(first_day, TimeInfo.weekday[schedule.root_node.departure.day])
+    TimeInfo.adjust(TimeInfo.weekdayInv()[first_day])
+
+    for i, vehicle in enumerate(retriever_data.values()):
+        t_start = t_end = None
+        in_depot = False
+        schedule_no = 0
+        for t, location in vehicle['log_data']['location']['values'].items():
+            if isinstance(location, GridSegment) and location.origin.type_ == 'depot':
+                t_start = t
+                if in_depot:
+                    rect = patches.Rectangle((t_end, y_ticks[i] - bar_height / 2), t_start - t_end, bar_height,
+                                             linewidth=linewidth, edgecolor='k', linestyle='--', fill=False, zorder=9)
+                    plot.axes.add_patch(rect)
+                in_depot = False
+            if isinstance(location, GridPoint) and location.type_ == 'depot' and not in_depot:
+                t_end = t
+                rect = patches.Rectangle((t_start, y_ticks[i] - bar_height / 2), t_end - t_start, bar_height,
+                                         linewidth=linewidth, edgecolor='k', fill=False, zorder=10)
+                plot.axes.add_patch(rect)
+                if display_schedules:
+                    schedule = vehicle['mission_list'][schedule_no]
+                    text = schedule.root_node.name if hasattr(schedule.root_node, 'name') else schedule.root_node.ID
+                    plot.axes.annotate(text,
+                                       (t_start + (t_end - t_start) / 2, y_ticks[i] + bar_height / 2 + margin_top),
+                                       horizontalalignment='center', zorder=11)
+                schedule_no += 1
+                in_depot = True
+        if in_depot:
+            rect = patches.Rectangle((t_end, y_ticks[i] - bar_height / 2), t - t_end, bar_height,
+                                     linewidth=linewidth, edgecolor='k', linestyle='--', fill=False, zorder=9)
+            plot.axes.add_patch(rect)
+
+    plot.axes.axis([t_min, t_max, 0, y_ticks[-2]])
+    plot.axes.set(title=title, xlabel=xlabel, ylabel=ylabel)
+    plot.axes.set_yticks(y_ticks)
+    plot.axes.set_yticklabels(retriever_data.keys())
+    plot.axes.grid(which='major', axis='x')
+    plot.axes.set_axisbelow(True)
+
+    convert_timelabels_to_hours(plot.axes)
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+
+    return plot
+
+
+def _get_soc(soc_dict, timestamp):
+    """
+    (v_a + v_b)/2 between soc_dict entries (k_a,v_a), (k_b,v_b) where k_a < timestamp < k_b
+    :param soc_dict:
+    :param timestamp:
+    :return:
+    """
+    if soc_dict.get(timestamp) is not None:
+        return soc_dict[timestamp]
+    timestamps = list(soc_dict.keys())
+    if timestamp > timestamps[-1]:
+        return soc_dict[timestamps[-1]]
+    i = 0
+    while i < len(timestamps) and timestamp > timestamps[i]:
+        i += 1
+    return (soc_dict[timestamps[i - 1]] + soc_dict[timestamps[i]]) / 2
+
+
+def _get_last_soc(soc_dict, timestamp):
+    if soc_dict.get(timestamp) is not None:
+        return soc_dict[timestamp]
+    timestamps = list(soc_dict.keys())
+    i = 0
+    while timestamp > timestamps[i]:
+        i += 1
+    return soc_dict[timestamps[i]]
+
+
+# def termini(arg, include_empty_trips=False):
+#     if isinstance(arg, schedule.Schedule):
+#         trip_nodes = arg.root_node.children
+#     elif isinstance(arg, schedule.TimeTable):
+#         trip_nodes = arg.get_all()
+#     elif isinstance(arg, schedule.ScheduleContainer):
+#         trip_nodes = []
+#         for sched in arg.get_all():
+#             for trip in sched.root_node.children:
+#                 trip_nodes.append(trip)
+#     else:
+#         raise Exception()
+#
+#
+
+
+def plot_vehicle_types_per_line(arg,
+                                title='vehicles per line', xlabel='line', ylabel='no trips', figuresize=None,
+                                show=False, save=False, filename='vehicle_types_per_line', formats=None):
+    """
+    :param arg: TimeTable or ScheduleContainer object
+    :param title:
+    :param xlabel:
+    :param ylabel:
+    :param figuresize:
+    :param show:
+    :param save:
+    :param filename:
+    :param formats:
+    :return: Plot object
+    """
+    i = j = 0
+    line_index = dict()
+    vehicle_type_index = dict()
+    if isinstance(arg, TimeTable):
+        trip_nodes = arg.get_all()
+        for trip in trip_nodes:
+            if trip.vehicle_type not in vehicle_type_index:
+                vehicle_type_index[trip.vehicle_type] = i
+                i += 1
+            if trip.line not in line_index.keys():
+                line_index[trip.line] = j
+                j += 1
+
+        vehicle_types_lines = np.zeros((i, j))
+        for trip in trip_nodes:
+            if trip.trip_type == 'passengerTrip':
+                i = vehicle_type_index[trip.vehicle_type]
+                j = line_index[trip.line]
+                vehicle_types_lines[i][j] += 1
+    elif isinstance(arg, ScheduleContainer):
+        schedules = arg.get_all()
+        for schedule in schedules:
+            if schedule.root_node.vehicle_type not in vehicle_type_index:
+                vehicle_type_index[schedule.root_node.vehicle_type] = i
+                i += 1
+            for trip in schedule.root_node.children:
+                if trip.line not in line_index.keys():
+                    line_index[trip.line] = j
+                    j += 1
+
+        vehicle_types_lines = np.zeros((i, j))
+        for schedule in schedules:
+            for trip in schedule.root_node.children:
+                if trip.trip_type == 'passengerTrip':
+                    i = vehicle_type_index[schedule.root_node.vehicle_type]
+                    j = line_index[trip.line]
+                    vehicle_types_lines[i][j] += 1
+    else:
+        raise Exception()
+
+    plot = Plot(figuresize=figuresize, show=show)
+
+    vehicle_types = list(vehicle_type_index.keys())
+    plot.axes.bar(line_index.values(), vehicle_types_lines[0, :], label=vehicle_types[0])
+    bottom = vehicle_types_lines[0, :]
+    for i in range(1, vehicle_types_lines.shape[0]):
+        plot.axes.bar(line_index.values(), vehicle_types_lines[i, :], bottom=bottom, label=vehicle_types[i])
+        bottom += vehicle_types_lines[i, :]
+
+    plot.axes.set_xticks(list(line_index.values()))
+    plot.axes.set_xticklabels(list(line_index.keys()), rotation=90)
+    plot.axes.set(title=title, xlabel=xlabel, ylabel=ylabel)
+    plot.axes.legend()
+    plot.axes.grid(which='major', axis='y')
+    plot.axes.set_axisbelow(True)
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+
+    return plot
+
+
+def count_arrivals_per_terminus(arg, include_empty_trips=False):
+    if isinstance(arg, Schedule):
+        trip_nodes = arg.root_node.children
+    elif isinstance(arg, TimeTable):
+        trip_nodes = arg.get_all()
+    elif isinstance(arg, ScheduleContainer):
+        trip_nodes = []
+        for sched in arg.get_all():
+            for trip in sched.root_node.children:
+                trip_nodes.append(trip)
+    else:
+        raise Exception()
+
+    arrival_count = {'by_name': {},
+                     'by_gridpoint_id': {}}
+
+    for trip in trip_nodes:
+        if not include_empty_trips and trip.trip_type == 'emptyTrip':
+            continue
+
+        if not trip.destination.name in arrival_count['by_name']:
+            arrival_count['by_name'].update({trip.destination.name: 1})
+        else:
+            arrival_count['by_name'][trip.destination.name] += 1
+
+        if not trip.destination.ID in arrival_count['by_gridpoint_id']:
+            arrival_count['by_gridpoint_id'].update({trip.destination.ID: 1})
+        else:
+            arrival_count['by_gridpoint_id'][trip.destination.ID] += 1
+
+    return arrival_count
+
+
+def plot_trips_per_terminus(arg, arg2='arrivals', separate_by_grid_point_id=False, sort=True, show_ids=False, stations_set=[[]],
+                            title=None, xlabel=None, ylabel=None, figuresize=None,
+                            show=False, save=False, filename='arrivals_per_terminus', formats=None):
+    """
+
+    :param arg: Schedule, TimeTable or ScheduleContainer object
+    :param arg2: count trips' 'arrivals', 'departures' or 'both'
+    :param separate_by_grid_point_id: True: distinguish between gridpoints by their id,
+                                      False: distinguish between gridpoints by their name
+    :param sort: True: sort by number of arrivals
+    :param show_ids:
+    :param title:
+    :param xlabel:
+    :param ylabel:
+    :param figuresize:
+    :param show:
+    :param save:
+    :param filename:
+    :param formats:
+    :return: Plot object
+    """
+    if isinstance(arg, Schedule):
+        trips = arg.root_node.children
+    elif isinstance(arg, TimeTable):
+        trips = arg.get_all()
+    elif isinstance(arg, ScheduleContainer):
+        trips = [trip for schedule in arg.get_all() for trip in schedule.root_node.children]
+    else:
+        raise Exception()
+
+    plot = Plot(figuresize=figuresize, show=show)
+
+    stations = []
+    for trip in trips:
+        if trip.origin not in stations:
+            stations.append(trip.origin)
+        if trip.destination not in stations:
+            stations.append(trip.destination)
+
+    departures = {station: 0 for station in stations}
+    arrivals = {station: 0 for station in stations}
+    for trip in trips:
+        departures[trip.origin] += 1
+        arrivals[trip.destination] += 1
+
+    if arg2 == 'departures':
+        data = departures
+    elif arg2 == 'arrivals':
+        data = arrivals
+    else:
+        data = {station: departures[station] + arrivals[station] for station in stations}
+
+    if not separate_by_grid_point_id:
+        for key, value in data.items():
+            for station in data.keys():
+                if station.name == key.name and station.ID != key.ID:
+                    data[key] += data[station]
+                    data[station] = -1
+        for key, value in copy.copy(data).items():
+            if value == -1:
+                del data[key]
+    if sort:
+        data = {key: value for key, value in sorted(data.items(), key=lambda item: item[1])}
+    if show_ids:
+        x = [station.name + str(station.ID) for station in data.keys()]
+    else:
+        x = [station.name for station in data.keys()]
+    y = list(data.values())
+
+    bars = plot.axes.barh(x, y)
+
+    figure_width, figure_height = plot.figure.get_size_inches()
+    margin = 1 / (in2cm(figure_width) / 10)
+    for bar in bars:
+        plot.axes.text(bar.get_width() + margin,
+                       bar.get_y() + bar.get_height()/2,
+                       '%d' % bar.get_width(),
+                       ha='left', va='center', fontsize=6, fontweight='bold', color='black')
+
+    a = b = c = d = e = f = g = h = 0
+    for station in stations:
+        if station.name in stations_set[0] and station.name in stations_set[1]:
+            bars[x.index(station.name)].set_color('tab:orange')
+            if c == 0:
+                bars[x.index(station.name)].set_label('in both')
+            c += _get_data_by_station_name(data, station.name)
+            g += 1
+        elif station.name in stations_set[0]:
+            bars[x.index(station.name)].set_color('tab:green')
+            if a == 0:
+                bars[x.index(station.name)].set_label('manually chosen')
+            a += _get_data_by_station_name(data, station.name)
+            e += 1
+        elif station.name in stations_set[1]:
+            bars[x.index(station.name)].set_color('tab:red')
+            if b == 0:
+                bars[x.index(station.name)].set_label('calculated')
+            b += _get_data_by_station_name(data, station.name)
+            f += 1
+        else:
+            bars[x.index(station.name)].set_color('tab:grey')
+            if d == 0:
+                bars[x.index(station.name)].set_label('in none')
+            d += _get_data_by_station_name(data, station.name)
+            h += 1
+
+    if len(stations_set) > 0:
+        if arg2 != "arrivals" and arg2 != "departures":
+            print("arrivals and departures at stations")
+        else:
+            print("%s at stations", arg2)
+        print("manually chosen: %d, calculated: %d, in both: %d, in none: %d" % (a + c, b + c, c, d))
+        print("%d stations in common, %d chosen manually, %d calculated, %d remaining" % (g, e + g, f + g, h))
+
+    plot.axes.set(title=title, xlabel=xlabel, ylabel=ylabel)
+    plot.axes.grid(which='major', axis='x')
+    plot.axes.set_axisbelow(True)
+    plot.axes.legend()
+
+    if figuresize is None:
+        height = len(x)*cm2in(1)
+        width = 10
+        plot.figure.set_size_inches((width, height))
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+
+    return plot
+
+
+def _get_data_by_station_name(data, station_name):
+    for key in data.keys():
+        if key.name == station_name:
+            return data[key]
+    return None
+
+
+def plot_number_of_trips_between_stations(trip_nodes, separate_by_grid_point_id=False,
+                                          separate_by_direction=False, separate_by_vehicle_type=False,
+                                          title=None, xlabel="Anz. Fahrten", ylabel=None, figuresize=None,
+                                          show=False, save=False, filename='number_of_trips_between_stations', formats=None):
+    """
+    :param trip_nodes: list of trip node objects
+    :param separate_by_grid_point_id: True: distinguish between gridpoints by their id,
+                                      False: distinguish between gridpoints by their name
+    :param separate_by_direction: True: distinguish between direction between stations,
+                                  False: sum number of trips between stations
+    :param separate_by_vehicle_type: True: color bars for each vehicle type and show in vehicle type in legend
+    :param title:
+    :param xlabel:
+    :param ylabel:
+    :param figuresize:
+    :param show:
+    :param save:
+    :param filename:
+    :param formats:
+    :return: Plot Object
+    """
+
+    plot = Plot(figuresize=figuresize, show=show)
+
+    trips, vehicle_types, matrix = count_number_of_trips_between_stations(trip_nodes, separate_by_grid_point_id,
+                                                                          separate_by_direction)
+
+    if separate_by_grid_point_id:
+        trip_labels = [str(key[0][0] + ' ' + str(key[0][1])) + ' - ' + str(key[1][0] + ' ' + str(key[1][1])) for key in
+             trips]
+    else:
+        trip_labels = [str(key[0]) + ' - ' + str(key[1]) for key in trips]
+    x = np.arange(len(trip_labels))
+
+    if separate_by_vehicle_type:
+        bar_width = 0.8 / len(vehicle_types)
+        figure_width, figure_height = plot.figure.get_size_inches()
+        margin = 1 / (in2cm(figure_width) / 10)
+        for i, vehicle_type in enumerate(vehicle_types):
+            bar = plot.axes.barh(x + i * bar_width, list(matrix[i]), bar_width, label=vehicle_types[i])
+
+            for rect in bar:
+                if rect.get_width() > 0:
+                    plot.axes.text(rect.get_width() + margin,
+                                   rect.get_y() + rect.get_height() / 2,
+                                   '%d' % rect.get_width(),
+                                   ha='left', va='center', fontsize=6, fontweight='bold', color='black')
+        plot.axes.legend()
+    else:
+        bar = plot.axes.barh(x, list(np.sum(matrix, axis=0)))
+
+        figure_width, figure_height = plot.figure.get_size_inches()
+        margin = 1 / (in2cm(figure_width) / 10)
+
+        for rect in bar:
+            if rect.get_width() > 0:
+                plot.axes.text(rect.get_width() + margin,
+                               rect.get_y() + rect.get_height() / 2,
+                               '%d' % rect.get_width(),
+                               ha='left', va='center', fontsize=6, fontweight='bold', color='black')
+
+    plot.axes.set_yticks(x)
+    plot.axes.set_yticklabels(trip_labels)
+    plot.axes.set(title=title, xlabel=xlabel, ylabel=ylabel)
+    plot.axes.grid(which='major', axis='x')
+    plot.axes.set_axisbelow(True)
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+
+    return plot
+
+
+def sort_stops(trip_nodes, sort_by_direction):
+    found_trip = None
+    for trip in trip_nodes:
+        if trip.direction == sort_by_direction:
+            trip_containing_all_legs_found = True
+            for other_trip in trip_nodes:
+                found_origin = False
+                found_destination = False
+                for leg in trip.children:
+                    if other_trip.origin.name == leg.origin.name:
+                        found_origin = True
+                    if other_trip.destination.name == leg.destination.name:
+                        found_destination = True
+                if not found_origin or not found_destination:
+                    trip_containing_all_legs_found = False
+            if trip_containing_all_legs_found:
+                found_trip = trip
+                break
+    if found_trip is None:
+        return None
+    sorted_stops = []
+    for leg in found_trip.children:
+        for trip in trip_nodes:
+            if trip.origin.name == leg.origin.name and trip.origin.name not in sorted_stops:
+                sorted_stops.append(trip.origin.name)
+            if trip.destination.name == leg.destination.name and trip.destination.name not in sorted_stops:
+                sorted_stops.append(trip.destination.name)
+    return sorted_stops
+
+
+def plot_trips(trip_nodes, sort_by_direction=1, sorted_stops=None,
+               title=None, xlabel=None, ylabel=None, row_height=None,
+               width_per_hour=None, figuresize=None,
+               linewidth=1.0,
+               show=False, save=True, filename='trips', formats=None):
+    """
+    :param trip_nodes:
+    :param sort_by_direction:
+    :param sorted_stops:
+    :param title:
+    :param xlabel:
+    :param ylabel:
+    :param figuresize:
+    :param show:
+    :param save:
+    :param filename:
+    :param formats:
+    :return: LinePlot object
+    """
+    if sorted_stops is None:
+        sorted_stops = sort_stops(trip_nodes, sort_by_direction)
+        if sorted_stops is None:
+            logger = logging.getLogger("evaluation_logger")
+            logger.warning("could not sort stations of trip_nodes")
+            sorted_stops = []
+            for trip in trip_nodes:
+                if trip.destination.name not in sorted_stops:
+                    sorted_stops.append(trip.destination.name)
+                if trip.origin.name not in sorted_stops:
+                    sorted_stops.append(trip.origin.name)
+
+
+    plot = LinePlot(title=title, xlabel=xlabel, ylabel=ylabel, # figuresize=(width, height),
+                    linewidth=linewidth, show=show)
+
+    colors = ['b', 'g', 'r', 'c', 'm', 'y', 'k', 'w']
+    color_vehicle_type = {}
+    i = 0
+    for trip in trip_nodes:
+        if trip.vehicle_type not in color_vehicle_type.keys():
+            color_vehicle_type[trip.vehicle_type] = colors[i]
+            i += 1
+
+    vehicle_type_plotted = {vehicle_type: False for vehicle_type in color_vehicle_type.keys()}
+    for trip in trip_nodes:
+        x = [trip.departure.getSeconds(), trip.arrival.getSeconds()]
+        y = [sorted_stops.index(trip.origin.name), sorted_stops.index(trip.destination.name)]
+        if not vehicle_type_plotted[trip.vehicle_type]:
+            plot.axes.plot(x, y, label=trip.vehicle_type, color=color_vehicle_type[trip.vehicle_type],
+                           linewidth=linewidth)
+            vehicle_type_plotted[trip.vehicle_type] = True
+        else:
+            plot.axes.plot(x, y, color=color_vehicle_type[trip.vehicle_type],
+                           linewidth=linewidth)
+
+    plot.axes.xaxis.set_major_locator(ticker.MultipleLocator(base=60 * 60))
+    x_tick_labels = ['{3:02n}'.format(t.year, t.month, t.day, t.hour, t.minute, t.second)
+                     for t in [pd.Timestamp(tick, unit='s') for tick in plot.axes.get_xticks()]]
+    plot.axes.set_xticklabels(x_tick_labels)
+    plot.axes.xaxis.set_minor_locator(ticker.MultipleLocator(base=10 * 60))
+    plot.axes.grid(which='minor', linestyle='--')
+    plot.axes.set_yticks(range(len(sorted_stops)))
+    plot.axes.set_yticklabels(sorted_stops)
+    plot.axes.legend()
+
+    # determine figure size
+    if figuresize is None:
+        if row_height is None:
+            row_height = cm2in(1.5)
+        if width_per_hour is None:
+            width_per_hour = cm2in(1.5)
+        height = len(sorted_stops)*row_height + cm2in(2)
+        xlim = plot.axes.get_xlim()
+        width = (xlim[1]-xlim[0])/3600*width_per_hour + cm2in(4)
+        figuresize = (width, height)
+
+    plot.figure.set_size_inches(figuresize)
+
+    plot.axes.set(title=title, xlabel=xlabel, ylabel=ylabel)
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+
+    return plot
+
+
+def plot_num_departures(trips_list, title=None,
+                        ylabel='Number of departures per hour',
+                        xlabel='Hour',
+                        x_ticks_base=2,
+                        color=None,
+                        show=False, save=False,
+                        filename='num_departures_per_hour',
+                        figuresize=None,
+                        formats=None):
+    # TimeInfo.adjust(base_day)
+    # trips_sorted = sorted(trips_list, key=lambda trip: trip.departure)
+    departures_hour = [trip.departure.getSeconds()/3600 for trip in trips_list]
+    x_min = math.floor(min(departures_hour))
+    x_max = math.ceil(max(departures_hour))
+    bins = range(x_min, x_max+1)
+
+    plot = Plot(figuresize=figuresize)
+    plot.axes.hist(departures_hour, bins=bins, rwidth=0.9, color=color)
+    # if color is not None:
+    #     plot.axes.hist(departures_hour, bins=bins, rwidth=0.9, color=color)
+    # else:
+    #     plot.axes.hist(departures_hour, bins=bins, rwidth=0.9)
+
+    plot.axes.set(title=title, xlabel=xlabel, ylabel=ylabel)
+
+    plot.axes.grid(which='major', axis='y')
+    plot.axes.set_axisbelow(True)
+
+    major_locator = ticker.MultipleLocator(base=x_ticks_base)
+    plot.axes.xaxis.set_major_locator(major_locator)
+
+    xticks = plot.axes.get_xticks()
+    day = 24
+    xticklabels = [int(x % day) for x in xticks]
+    plot.axes.set_xticklabels(xticklabels)
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+    return plot
+
+def plot_num_departures_24hrs(trips_list, day, start_hour, title=None,
+                              ylabel='Number of departures per hour',
+                              xlabel='Hour',
+                              show=False, save=False,
+                              filename='num_departures_per_hour',
+                              formats=None):
+    TimeInfo.adjust(day)
+    num_trips = {}
+    for hour in range(start_hour, start_hour + 24):
+        num_trips.update({hour: 0})
+    for trip in trips_list:
+        for hour in range(start_hour, start_hour + 24):
+            if trip.departure >= TimeInfo(day, hour * 3600) and \
+                    trip.departure < TimeInfo(day, hour * 3600) + 3600:
+                num_trips[hour] += 1
+
+    plot = Plot()
+
+    plot.axes.bar(num_trips.keys(), num_trips.values())
+    xticklabels = list(num_trips.keys())
+    for i, val in enumerate(xticklabels):
+        if val >= 24:
+            xticklabels[i] = val - 24
+
+    plot.axes.set(title=title, xlabel=xlabel, ylabel=ylabel,
+                  xticks=list(num_trips.keys()),
+                  xticklabels=xticklabels)
+
+    # major_locator = ticker.MultipleLocator(base=2)
+    # plot.axes.yaxis.set_major_locator(major_locator)
+
+    plot.axes.grid(which='major', axis='y')
+    plot.axes.set_axisbelow(True)
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+
+    return plot
+
+
+def plot_total_distance_per_day(trips_dict,
+                                title=None, xlabel=None, ylabel='km', figuresize=None,
+                                show=False, save=False, filename='total_distance_per_day', formats=None):
+    """
+
+    :param trips_dict: each entry in trips_dict is of form (day, list of trips)
+    :param title:
+    :param xlabel:
+    :param ylabel:
+    :param figuresize:
+    :param show:
+    :param save:
+    :param filename:
+    :param formats:
+    :return:  Plot object
+    """
+    plot = Plot(figuresize=figuresize)
+
+    total_distance = dict()
+
+    for day, trips in trips_dict.items():
+        if not day in total_distance:
+            total_distance.update({day: 0})
+        for trip in trips:
+            total_distance[day] += trip.distance
+
+    plot.axes.bar(total_distance.keys(), total_distance.values())
+
+    plot.axes.set(title=title, xlabel=xlabel, ylabel=ylabel)
+    plot.axes.grid(which='major', axis='y')
+    plot.axes.set_axisbelow(True)
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+
+    return plot
+
+
+def count_number_of_trips_between_stations(trip_nodes, separate_by_grid_point_id, separate_by_direction):
+    trip_indices = []
+    vehicle_types = []
+
+    for trip in trip_nodes:
+        if separate_by_grid_point_id:
+            if separate_by_direction:
+                trip_index = ((trip.origin.name, trip.origin.ID), (trip.destination.name, trip.destination.ID))
+                if trip_index not in trip_indices:
+                    trip_indices.append(trip_index)
+            else:
+                index_1 = ((trip.origin.name, trip.origin.ID), (trip.destination.name, trip.destination.ID))
+                index_2 = ((trip.destination.name, trip.destination.ID), (trip.origin.name, trip.origin.ID))
+                if index_1 not in trip_indices and index_2 not in trip_indices:
+                    trip_indices.append(index_1)
+        else:
+            if separate_by_direction:
+                trip_index = (trip.origin.name, trip.destination.name)
+                if trip_index not in trip_indices:
+                    trip_indices.append(trip_index)
+            else:
+                index_1 = (trip.origin.name, trip.destination.name)
+                index_2 = (trip.destination.name, trip.origin.name)
+                if index_1 not in trip_indices and index_2 not in trip_indices:
+                    trip_indices.append(index_1)
+
+    for trip in trip_nodes:
+        if trip.vehicle_type not in vehicle_types:
+            vehicle_types.append(trip.vehicle_type)
+
+    matrix = np.zeros((len(vehicle_types), len(trip_indices)))
+
+    for trip in trip_nodes:
+        if separate_by_grid_point_id:
+            if separate_by_direction:
+                trip_index = ((trip.origin.name, trip.origin.ID), (trip.destination.name, trip.destination.ID))
+                matrix[vehicle_types[trip.vehicle_type]][trip_indices[trip_index]] += 1
+            else:
+                index_1 = ((trip.origin.name, trip.origin.ID), (trip.destination.name, trip.destination.ID))
+                index_2 = ((trip.destination.name, trip.destination.ID), (trip.origin.name, trip.origin.ID))
+                if index_1 in trip_indices:
+                    matrix[vehicle_types.index(trip.vehicle_type)][trip_indices.index(index_1)] += 1
+                else:
+                    matrix[vehicle_types.index(trip.vehicle_type)][trip_indices.index(index_2)] += 1
+        else:
+            if separate_by_direction:
+                trip_index = (trip.origin.name, trip.destination.name)
+                matrix[vehicle_types.index(trip.vehicle_type)][trip_indices.index(trip_index)] += 1
+            else:
+                index_1 = (trip.origin.name, trip.destination.name)
+                index_2 = (trip.destination.name, trip.origin.name)
+                if index_1 in trip_indices:
+                    matrix[vehicle_types.index(trip.vehicle_type)][trip_indices.index(index_1)] += 1
+                else:
+                    matrix[vehicle_types.index(trip.vehicle_type)][trip_indices.index(index_2)] += 1
+
+    # trips_sorted = OrderedDict(sorted(list(trips_between_stations.items()),
+    #                                       key=lambda entry: entry[1],
+    #                                       reverse=True))
+
+    return trip_indices, vehicle_types, matrix
+
+
+def plot_specific_energy_consumption_per_vehicle(
+        retriever_data, show_mean=True, show_xticks=True,
+        title=None, xlabel=None, ylabel='kWh/km', width=None,
+        show=False, save=False, filename='specific_energy_consumption_vehicle', formats=None):
+    """
+    :param retriever_data:
+    :param show_mean: True: print value on top of each bar
+    :param show_xticks:
+    :param title:
+    :param xlabel:
+    :param ylabel:
+    :param figuresize:
+    :param show:
+    :param save:
+    :param filename:
+    :param formats:
+    :return: Plot object
+    """
+    distance_bar_text = 0.1
+    fontsize = 7
+
+    width = cm2in(len(retriever_data.values())) if width is None else width
+    height = global_constants['DEFAULT_PLOT_SIZE'][1]
+    plot = Plot(figuresize=(width, height), show=show)
+
+    energy_per_vehicle = []
+    for vehicle_id, vehicle in retriever_data.items():
+        specific_consumption_primary_list = list(
+            vehicle['log_data']['specific_consumption_primary']['values'].values())
+        specific_consumption_primary_list.remove(0)
+        average_specific_energy = specific_consumption_primary_list[-1]
+
+        energy_per_vehicle.append((vehicle_id, average_specific_energy))
+
+    xticks = np.arange(len(retriever_data))
+    sorted_energy_per_vehicle = sorted(energy_per_vehicle, key=lambda tup: tup[1])
+
+    bars = plot.axes.bar(xticks, [tup[1] for tup in sorted_energy_per_vehicle])
+
+    if show_mean:
+        max_height = -float('inf')
+        for rect in bars:
+            plot.axes.text(rect.get_x() + rect.get_width() / 2, rect.get_height() + distance_bar_text,
+                           '%.2f' % rect.get_height(),
+                           ha='center', va='top', fontsize=fontsize, fontweight='bold')
+            max_height = max(rect.get_height(), max_height)
+        plot.axes.set_ylim(top=max_height+distance_bar_text+fontsize/50)
+
+    if show_xticks:
+        plot.axes.set_xticks(xticks)
+        plot.axes.set_xticklabels([tup[0] for tup in sorted_energy_per_vehicle])
+    else:
+        plot.axes.set_xticks([])
+
+    plot.axes.set(title=title, xlabel=xlabel, ylabel=ylabel)
+    plot.axes.grid(which='major', axis='y')
+    plot.axes.set_axisbelow(True)
+    plot.figure.set_tight_layout(True)
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+
+    return plot
+
+
+def plot_specific_energy_consumption_fleet(logretriever_data_list, xticklabels,
+                                           title=None, xlabel=None, ylabel=None, figuresize=None,
+                                           show=False, save=False,
+                                           filename='specific_energy_consumption_fleet', formats=None):
+    """
+
+    :param logretriever_data_list:
+    :param xticklabels:
+    :param title:
+    :param xlabel:
+    :param ylabel:
+    :param figuresize:
+    :param show:
+    :param save:
+    :param filename:
+    :param formats:
+    :return:
+    """
+    plot = Plot(figuresize=figuresize, show=show)
+
+    average_specific_energy = []
+    specific_energy_error = []
+    for logretriever_data in logretriever_data_list:
+        specific_energy_logretriever = []
+
+        for vehicle in logretriever_data['vehicles'].values():
+            specific_consumption_primary_list = list(
+                vehicle['log_data']['specific_consumption_primary']['values'].values())
+            average_specific_energy_logretriever = specific_consumption_primary_list[-1]
+            specific_energy_logretriever.append(average_specific_energy_logretriever)
+
+        average_specific_energy_logretriever = sum(specific_energy_logretriever)/len(specific_energy_logretriever)
+        average_specific_energy.append(average_specific_energy_logretriever)
+        specific_energy_error.append(max(specific_energy_logretriever) - min(specific_energy_logretriever))
+
+    xticks = np.arange(len(logretriever_data_list))
+
+    bars = plot.axes.bar(xticks, average_specific_energy, yerr=specific_energy_error)
+
+    # Add value labels to bars:
+    # dist = (plot.axes.get_ylim()[0] - plot.axes.get_ylim()[1])/50
+    for rect in bars:
+        rect_height = rect.get_height()
+        plot.axes.text(rect.get_x() + rect.get_width()/2,
+                       plot.axes.get_ylim()[1]-0.03*(plot.axes.get_ylim()[1]-plot.axes.get_ylim()[0]),
+                       '%.2f' % rect_height,
+                       ha='center', va='top', fontsize=7,
+                       fontweight='bold')
+
+    # x_tick_labels = ['{}'.format(tick+1) for tick in xticks]
+    plot.axes.set_xticks(xticks)
+    plot.axes.set_xticklabels(xticklabels)
+    plot.axes.set(title=title, xlabel=xlabel, ylabel=ylabel)
+    plot.axes.grid(which='major', axis='y')
+    plot.axes.set_axisbelow(True)
+    plot.figure.set_tight_layout(True)
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+
+    return plot
+
+
+def plot_ga_fitness(ga_state_dict, display=['mean', 'best', 'worst'],
+                    xlabel_generation='Generation',
+                    xlabel_time='Time (s)', ylabel='Fitness',
+                    best_label='best', worst_label='worst', mean_label='mean',
+                    invert_fitness=False, scale_time=1, xlim_time=None,
+                    xlim_generation=None, ylim=None, yticks=None,
+                    legend=True, legend_loc=None,
+                    figuresize=None,
+                    show=False, save=False, filename='ga_fitness', formats=None):
+    """
+
+    :param ga_state_dict:
+    :param figuresize:
+    :param show:
+    :param save:
+    :param filename:
+    :param formats:
+    :return:
+    """
+    plot = Plot(figuresize=figuresize, show=show)
+
+    history = ga_state_dict['history']
+    invert = -1 if invert_fitness else 1
+
+    if 'mean' in display:
+        plot.axes.plot(np.array(list(history['fitness_mean'].keys())),
+                       np.array(list(history['fitness_mean'].values()))*invert,
+                       label=mean_label)
+    if 'best' in display:
+        plot.axes.plot(np.array(list(history['fitness_max'].keys())),
+                       np.array(list(history['fitness_max'].values()))*invert,
+                       label=best_label)
+    if 'worst' in display:
+        plot.axes.plot(np.array(list(history['fitness_min'].keys())),
+                       np.array(list(history['fitness_min'].values()))*invert,
+                       label=worst_label)
+    plot.axes.set_xlabel(xlabel_generation)
+    plot.axes.set_ylabel(ylabel)
+    if legend:
+        plot.axes.legend(frameon=True, loc=legend_loc)
+
+
+    computation_time = \
+        np.array([sum(list(history['fitness_evaluation_time'].values())[:i])
+            for i in range(len(history['fitness_mean']))]) * scale_time
+    axes2 = plot.axes.twiny()
+    axes2.plot(computation_time,
+               np.array(list(history['fitness_mean'].values()))*invert,
+               visible=False)
+    axes2.set_xlabel(xlabel_time)
+    plot.figure.tight_layout()
+    if xlim_generation is not None:
+        plot.axes.set_xlim(xlim_generation)
+    if xlim_time is not None:
+        axes2.set_xlim(xlim_time)
+    if ylim is not None:
+        plot.axes.set_ylim(ylim)
+        axes2.set_ylim(ylim)
+    if yticks is not None:
+        plot.axes.set_yticks(yticks)
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+    return plot
+
+
+def plot_ga_fitness_hist(fitness_values, invert_fitness=False, bins=None, xlim=None,
+                         figuresize=None, xlabel=None, ylabel=None,
+                         show=False, save=False, filename='ga_fitness_hist',
+                         formats=None):
+    plot = Plot(figuresize=figuresize, show=show)
+    if invert_fitness:
+        fitness_values = [-fitness_value for fitness_value in fitness_values]
+    plot.axes.hist(fitness_values, bins=bins)
+    plot.axes.grid(which='major', axis='y')
+    plot.axes.set_axisbelow(True)
+    plot.axes.set_xlabel(xlabel)
+    plot.axes.set_ylabel(ylabel)
+    if xlim is not None:
+        plot.axes.set_xlim(xlim)
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+    return plot
+
+
+def plot_ga_fitness_deviation(ga_state_dict, figuresize=None,
+                              show=False, save=False, filename='ga_fitness_deviation', formats=None):
+    """
+
+    :param ga_state_dict:
+    :param figuresize:
+    :param show:
+    :param save:
+    :param filename:
+    :param formats:
+    :return:
+    """
+    plot = Plot(figuresize=figuresize, show=show)
+
+    history = ga_state_dict['history']
+
+    plot.axes.plot(list(history['fitness_stddev'].keys()),
+               list(history['fitness_stddev'].values()))
+    computation_time = [sum(list(history['fitness_evaluation_time'].values())[:i])
+                        for i in range(len(history['fitness_mean']))]
+    axes2 = plot.axes.twiny()
+    axes2.set_xlabel('Time')
+    axes2.plot(computation_time, list(history['fitness_stddev'].values()), visible=False)
+    plot.axes.set_xlabel('Generation')
+    plot.axes.set_ylabel('Standard deviation')
+    plot.figure.tight_layout()
+
+    if show:
+        plt.show()
+    if save:
+        plot.save(filename, formats=formats)
+    if not show:
+        plt.close()
+    return plot
+
+
+def simulation_report_text(simulation_info):
+    text = 'Simulation report for simulation '\
+           + simulation_info['params']['simulation_params']['title'] + '\n'
+    text += hline_thin() + '\n\n'
+    text += 'Description: '\
+            + simulation_info['params']['simulation_params']['description']\
+            + '\n\n'
+
+    text += 'Number of vehicles:\n'
+    for vtype, num in simulation_info['object_eval_data']\
+            ['num_vehicles'].items():
+        text += vtype + ': ' + str(num) + '\n'
+    text += 'total: ' + str(sum(simulation_info['object_eval_data']
+                                ['num_vehicles'].values())) + '\n\n'
+
+    text += 'Driver hours:\n'
+    text += 'Driving: ' + '{:.02f}'.format(simulation_info['object_eval_data']['driver_driving_time']/3600) + 'h\n'
+    text += 'Pausing: ' + '{:.02f}'.format(simulation_info['object_eval_data']['driver_pause_time']/3600) + ' h\n'
+    text += 'Manoevering in depot: ' + '{:.02f}'.format(simulation_info['object_eval_data']['driver_additional_paid_time']/3600) + ' h\n'
+    text += 'Total: ' + '{:.02f}'.format(simulation_info['object_eval_data']['driver_total_time']/3600) + ' h\n\n'
+
+    text += 'Fleet energy consumption:\n'
+    for medium, consumption in simulation_info['object_eval_data']['fleet_consumption'].items():
+        text += medium + ': ' + '{:.02f}'.format(consumption.energy) + ' ' + Units.energy.name + '\n'
+
+    text += '\nSpecific fleet consumption by vehicle type:\n'
+    for vtype, consumption_per_medium in simulation_info['object_eval_data']['fleet_specific_consumption_by_vehicle_type'].items():
+        text += vtype + ':\n'
+        for medium_name, consumption in consumption_per_medium.items():
+            text += medium_name + ': ' + '{:.02f}'.format(consumption.energy) + ' ' + Units.energy.name + '/' + Units.distance.name + '\n'
+
+    if 'charging_point_occupation_grouped' in simulation_info:
+        text += '\nMaximum charging point occupation:\n'
+        for cp_name, occupation in simulation_info['charging_point_occupation_grouped'].items():
+            text += cp_name + ': ' + str(int(max(occupation))) + ' vehicles\n'
+    return text
+
+def simulation_report_text_file(simulation_info, file_path):
+    with open(file_path, 'w') as file:
+        file.write(simulation_report_text(simulation_info))
+
+class SimulationReport:
+    def __init__(self, title=None, eval_vehicles=None, eval_infra=None,
+                 vehicle_type_map=None, vehicles=None, charging_interfaces=None,
+                 global_constants=None, dictionary=None):
+        self.title = title
+        self.eval_vehicles = eval_vehicles
+        self.eval_infra = eval_infra
+        self.chargingInterfaces = charging_interfaces
+        self.vehicleTypeMap = vehicle_type_map
+        self.globalConstants = global_constants
+        self.globalReportData = dict()
+        self.vehicleReportData = dict()
+        self.dictionary = dictionary
+
+        # Generate trip reports
+        for vehicle in vehicles:
+            trips_data_dict = self.create_trip_report_dict(vehicle.driver.trips_data)
+            vehicle_df = pd.DataFrame.from_dict(trips_data_dict, orient='index')
+            first_trip_node = vehicle.driver.schedule.root_node.children[0]
+            first_schedule_name = first_trip_node.schedule_name \
+                    if hasattr(first_trip_node, 'schedule_name') else \
+                    first_trip_node.parent.ID
+            first_schedule_name = str(first_schedule_name).replace("/", "_")
+            self.vehicleReportData.update({first_schedule_name: vehicle_df})
+
+        self.set_global_report_data()
+
+    @staticmethod
+    def create_trip_report_dict(trips_data):
+        trips_data_dict = dict()
+        for trip_id, trip_dict in trips_data.items():
+            trip = trip_dict['trip']
+            energy_consumption = trip_dict['energy_departure'] - trip_dict['energy_arrival']
+            # charging_time_required = energy_consumption / (
+            #             trip_dict['charging_power'] - trip_dict['aux_power'])*60
+            distance_specific_energy_consumption = \
+                energy_consumption / trip.distance if trip.distance != 0 else 0
+            duration_scheduled = (trip.arrival - trip.departure)/60
+            duration_real = duration_scheduled + trip_dict['delay']/60
+            trip_arrival_real = trip.arrival
+            trip_arrival_real.addSeconds(trip_dict['delay'])
+
+            trips_data_dict[trip_id] = {
+                'Linie': trip.line if hasattr(trip, 'line') else '',
+                'Umlauf': trip.schedule_name if hasattr(trip, 'schedule_name') else trip.parent.ID,
+                'von': trip.origin.name,
+                'nach': trip.destination.name,
+                'Länge [km]': trip.distance,
+                'Abfahrt soll': trip.departure.toString(),
+                'Abfahrt ist': trip_dict['departure_time'].toString(),
+                'Abfahrt ist (Sim.)': trip_dict['departure_time_sim'],
+                'Ankunft soll': trip.arrival.toString(),
+                'Ankunft ist': trip_dict['arrival_time'].toString(),
+                'Ankunft ist (Sim.)': trip_dict['arrival_time_sim'],
+                'Fahrtdauer soll': duration_scheduled,
+                'Fahrtdauer ist': duration_real,
+                'Verspätung Fz. [min]': trip_dict['delay'] / 60,
+                'Verspätung Uml.pl. [min]': trip_dict['delay_in_schedule'] / 60,
+                'Wendezeit soll [min]': trip_dict['pause'] / 60,
+                'Wendezeit ist [min]': trip_dict['total_break_time'] / 60,
+                'Ladezeit erforderlich [min]': 'todo',#charging_time_required,
+                'Ladezeit Diff.': 'todo',
+                'Ladezustand Abfahrt [kWh]': trip_dict['energy_departure'],
+                'Ladezustand Ankunft [kWh]': trip_dict['energy_arrival'],
+                'Ladezustand Abfahrt [%]': trip_dict['soc_departure'],
+                'Ladezustand Ankunft [%]': trip_dict['soc_arrival'],
+                'Bereich': trip.origin.group,
+                'Verbrauch Fahrt': energy_consumption,
+                'Verbrauch Ges. kumuliert': trip_dict['energy_consumed'],
+                # 'Consumption trip ['
+                # + self.vehicle.energyStorage.energyUnit + ']':
+                #     trip_consumption,
+                # 'Consumption pause ['
+                # + self.vehicle.energyStorage.energyUnit + ']':
+                #     pause_consumption,
+                # 'Consumption total ['
+                # + self.vehicle.energyStorage.energyUnit + ']':
+                #     self.vehicle.energyTotal,
+                'NV-Leistung [kW]': trip_dict['aux_power'],
+                'Wegspezifischer Verbrauch [kWh/km]': distance_specific_energy_consumption
+                # 'Specific trip consumption, no pause ['
+                # + self.vehicle.energyStorage.energyUnit + '/km]':
+                #     spec_trip_consumption_driving,
+                # 'Specific trip consumption, incl. pause ['
+                # + self.vehicle.energyStorage.energyUnit + '/km]':
+                #     spec_trip_consumption_total})
+            }
+
+        return trips_data_dict
+
+    def set_global_report_data(self):
+        if self.vehicleTypeMap is not None:
+            vehicleData = dict()
+            for name, vehicle_type in self.vehicleTypeMap.items():
+                vParams = {
+                    # translate('Name', self.dictionary):
+                    #            params.name,
+                           # translate('Specific drivetrain consumption', self.dictionary):
+                           #      [params.specificDriveConsumption, 'kWh/km'],
+                           # translate('Battery capacity', self.dictionary):
+                           #      [params.energyStorage.capacityNominal, 'kWh'],
+                           # translate('SoC max', self.dictionary):
+                           #     [params.energyStorage.SoC_max],
+                           # translate('SoC min', self.dictionary):
+                           #     [params.energyStorage.SoC_min],
+                           # translate('SoC reserve', self.dictionary):
+                           #     [params.energyStorage.SoC_reserve],
+                           # translate('SoH', self.dictionary):
+                           #     [params.energyStorage.SoH],
+                           # translate('Max. C rate', self.dictionary):
+                           #     [params.energyStorage.C_rate],
+                           # translate('Max. charging power', self.dictionary):
+                           #     [params.energyStorage.maxPower, 'kW'],
+                           # translate('HVAC system', self.dictionary):
+                           #     [params.airConditioning]
+                           # }
+                            translate('Name', self.dictionary):
+                                vehicle_type.name,
+                           # translate('Specific drivetrain consumption', self.dictionary):
+                           #      [params.specificDriveConsumption, 'kWh/km'],
+                           translate('Battery capacity', self.dictionary):
+                               [vehicle_type.params['battery']['capacity_max'], 'kWh'],
+                           translate('SoC max', self.dictionary):
+                               [vehicle_type.params['battery']['soc_max']],
+                           translate('SoC min', self.dictionary):
+                               [vehicle_type.params['battery']['soc_min']],
+                           translate('SoC reserve', self.dictionary):
+                               [vehicle_type.params['battery']['soc_reserve']],
+                           translate('SoH', self.dictionary):
+                               [vehicle_type.params['battery']['soh']],
+                           translate('Max. C rate', self.dictionary):
+                               [vehicle_type.params['battery']['charge_rate']]
+                           # translate('Max. charging power', self.dictionary):
+                           #     [params.energyStorage.maxPower, 'kW'],
+                           # translate('HVAC system', self.dictionary):
+                           #     [params.airConditioning]
+                           # }
+                           }
+                vehicleData.update({translate(name, self.dictionary): vParams})
+            self.globalReportData.update(
+                {translate('Vehicles', self.dictionary): vehicleData})
+
+        if self.chargingInterfaces is not None:
+            chargingInterfaceData = dict()
+            for interface in self.chargingInterfaces:
+                name = interface.name
+                cParams = {
+                    translate('Dead time before', self.dictionary):
+                        [interface.deadTimeBefore, 's'],
+                    translate('Dead time after', self.dictionary):
+                        [interface.deadTimeAfter, 's'],
+                    translate('Max. power', self.dictionary):
+                        [interface.maxPower, 'kW'],
+                    translate('Efficiency', self.dictionary):
+                        [interface.efficiency]
+                }
+                chargingInterfaceData.update({translate(name, self.dictionary): cParams})
+            self.globalReportData.update(
+                {translate('Charging interfaces', self.dictionary): chargingInterfaceData})
+
+        if self.eval_infra is not None:
+            infraData = dict()
+            for cf in self.eval_infra.data.values():
+                name = cf['loggedAtts_const']['location.name']
+                cfParams = {
+                    translate('Charging interface', self.dictionary):
+                        [cf['loggedAtts_const']['interface.name']],
+                    translate('Max. number of vehicles', self.dictionary):
+                        [max(cf['loggedAtts_time']['numVehicles'])]
+                }
+                infraData.update(
+                    {translate(name, self.dictionary): cfParams})
+            self.globalReportData.update(
+                {translate('Charging infrastructure',
+                           self.dictionary): infraData})
+
+        if self.globalConstants is not None:
+            globalData = {
+                translate('Ambient temperature', self.dictionary):
+                    [self.globalConstants['general']['AMBIENT_TEMPERATURE'], '°C'],
+                translate('Always wait for charging', self.dictionary):
+                    [self.globalConstants['network']['WAIT_FOR_CHARGING']]
+            }
+            self.globalReportData.update({translate('Other parameters', self.dictionary):
+                                    globalData})
+
+    def save_xls(self, file):
+        # Save global report data
+        workbook = xlsxwriter.Workbook(file)
+        worksheet = workbook.add_worksheet(translate(self.title, self.dictionary))
+
+        heading_format = workbook.add_format({'bold': True, 'font_size': 16})
+        subheading_format = workbook.add_format({'bold': True, 'font_size': 12})
+        bold_format = workbook.add_format({'bold': True})
+
+        row = 0
+        col = 0
+
+        worksheet.write(row, col, self.title, heading_format)
+        row += 2
+
+        for cat, cat_data in self.globalReportData.items():
+            col = 0
+            worksheet.write(row, col, cat, subheading_format)
+            row += 2
+            for subcat, params in cat_data.items():
+                col = 0
+                if type(params) == dict:
+                    # we have a further layer to unpack
+                    worksheet.write(row, col, subcat, bold_format)
+                    row += 1
+                    for name, values in params.items():
+                        col = 0
+                        worksheet.write(row, col, name)
+                        col += 1
+                        if type(values) == str:
+                            worksheet.write(row, col, values)
+                        else:
+                            for value in values:
+                                worksheet.write(row, col, value)
+                                col += 1
+                        row += 1
+                    row += 1
+                elif type(params) == list:
+                    # only one layer
+                    worksheet.write(row, col, subcat)
+                    col += 1
+                    for value in params:
+                        worksheet.write(row, col, value)
+                        col += 1
+                    row += 1
+            row += 1
+        workbook.close()
+
+        # Save vehicle trip reports
+        workbook = load_workbook(file)
+        writer = pd.ExcelWriter(file, engine='openpyxl')
+        writer.book = workbook
+        writer.sheets = dict((sheet.title, sheet) for sheet in workbook.worksheets)
+            #[sheet.get_name() for sheet in workbook.worksheets()]
+        for vehicleID in self.vehicleReportData.keys():
+            self.vehicleReportData[vehicleID].to_excel(writer,
+                sheet_name=str(vehicleID))
+        #for worksheet in writer.sheets.values():
+        #for worksheet in workbook.worksheets:
+        #    worksheet.set_column(1, 10, 50)
+        writer.save()
+
+
+def plot_points_map(list_of_point_ids, grid, filename,
+                    aggregate_by_name=False,
+                    ignore_ids=None, show_popups=True):
+    """Create a map of GridPoints with OpenStreetMap as HTML file
+
+    :param list_of_point_ids: list of GridPoint IDs
+    :param grid: eflips.Grid object
+    :param filename: Path to output HTML file
+    :param aggregate_by_name: Combine stations with different GridPoint IDs, but identical name to one point in \
+     the map
+    :param ignore_ids: list of IDs to be ignored
+    :param show_popups: if True, all the popups will be shown automatically
+    :return: None will be returned. HTML link will be saved in the map_path directory
+    """
+    data_list = []
+    for id in list_of_point_ids:
+        location = grid.get_point(id)
+        data_list.append([location.coords['lat'], location.coords['lon'], location.name, id])
+
+    df = pd.DataFrame(data_list, columns=['lat', 'lon', 'name', 'ID'])
+    if aggregate_by_name:
+        df = df.drop_duplicates(subset='name')
+    if ignore_ids:
+        if type(ignore_ids) is list or tuple:
+            df = df[~df['ID'].isin(ignore_ids)]
+        elif type(ignore_ids) is int:
+            df = df[df.ID != ignore_ids]
+    m = folium.Map(location=[52.5200, 13.4050], tiles="OpenStreetMap", zoom_start=11)
+    for i in range(0, len(df)):
+#             text = "<b>Name: {name}<br>""ID: {id}<br></b>".format(name=df.iloc[i]['name'], id=df.iloc[i]['ID'])
+        text = df.iloc[i]['name']
+        folium.Marker(
+            [df.iloc[i]['lat'], df.iloc[i]['lon']],
+            popup=folium.Popup(text, show=show_popups, max_width=200,
+                               sticky=True),
+            #icon=folium.Icon(color='red', icon='plug', prefix='fa')
+            ).add_to(m)
+    m.save(filename)
+    return 0
+
+class ScheduleSimulationPlotParameters:
+    def __init__(self, **kwargs):
+        """
+        :param kwargs:
+
+        """
+        defaults = {'display_lines': True,
+                    'language': 'en'}
+        set_default_kwargs(self, kwargs, defaults)
+
+def plot_schedule_simulation_defaults():
+    """Generate a default parameter dict to be passed to
+    plot_schedule_simulation()."""
+    params_default = {
+        'vehicle_occupation_trips': {
+            'create': True,
+            'display_lines': False,
+        },
+        'vehicle_occupation_schedules': {
+            'create': True,
+            'display_lines': True,
+        },
+        'vehicle_occupation_soc': {
+            'create': True,
+            'display_lines': True,
+        },
+        'specific_energy_consumption_per_vehicle': {
+            'create': True,
+            'show_vehicle_ids': True,
+            'show_mean': True,
+        },
+        'specific_consumption_unit': 'kWh/km',
+        'language': 'en'
+    }
+    return params_default
+
+# In progress:
+def plot_schedule_simulation(retriever_data, eval_data, title_suffix, out_path,
+                             params):
+    if not os.path.exists(out_path):
+        os.mkdir(out_path)
+
+    # params_default = plot_schedule_simulation_defaults()
+    #
+    # if params is None:
+    #     # Generate a default set of parameters
+    #     params = params_default
+    # else:
+    #     deep_merge(params, params_default)
+
+    # Get translations from language settings
+    translate = global_constants['language'][params['language']]\
+        ['plots_network']
+
+    # Vehicle occupation
+    if params['vehicle_occupation_trips']['create']:
+        plot_vehicle_occupation_trips(
+            retriever_data['vehicles'],
+            display_lines=params['vehicle_occupation_trips']['display_lines'],
+            title=translate['vehicle_occupation_trips'] + ': ' + title_suffix,
+            show=False, save=True,
+            filename=os.path.join(out_path, 'vehicle_occupation_lines'))
+
+    # Vehicle occupation with SoC
+    if params['vehicle_occupation_soc']['create']:
+        plot_vehicle_occupation_soc(
+            retriever_data['vehicles'],
+            display_lines=params['vehicle_occupation_soc']['display_lines'],
+            title=translate['vehicle_occupation_trips'] + ': ' + title_suffix,
+            show=False,
+            save=True,
+            filename=os.path.join(out_path, 'vehicle_occupation_soc'))
+
+    # Mean specific energy consumption per vehicle
+    if params['specific_energy_consumption_per_vehicle']['create']:
+        plot_specific_energy_consumption_per_vehicle(
+            retriever_data['vehicles'],
+            title=translate['specific_consumption_per_vehicle'] + ': '
+                  + title_suffix,
+            ylabel=params['specific_consumption_unit'],
+            show_xticks=params['specific_energy_consumption_per_vehicle']
+                              ['show_vehicle_ids'],
+            show_mean=params['specific_energy_consumption_per_vehicle']
+                            ['show_mean'],
+            show=False, save=True,
+            filename=os.path.join(out_path,
+                                  'specific_energy_consumption_per_vehicle'))
+
+def plot_genetic_iterator_results(iterator_data):
+    pass
+
+
+#     # Vehicle distance
+#     plot_vehicles_distance(retriever_data['vehicles'],
+#                                               show=False, save=True,
+#                                               filename=os.path.join(
+#                                                   save_path,
+#                                                   'vehicle_distance'))
+#
+#     # Energy balance pie
+#     plot_energy_balance_pie(
+#         retriever_data['vehicles'], title='Energy balance',
+#         show=False, save=True,
+#         filename=os.path.join(save_path, 'energy_balance'))
+#
+#     # Fleet size
+#     plot_retriever_data_counter(
+#         retriever_data['fleet'], 'num_vehicles',
+#         title='Total number of vehicles',
+#         filename=os.path.join(save_path, 'num_vehicles_total'))
+#
+#     # Number of vehicles in service
+#     plot_retriever_data_counter(
+#         retriever_data['depot_container'], 'num_vehicles_in_service',
+#         title='Vehicles in service',
+#         filename=os.path.join(save_path, 'num_vehicles_in_service'))
+#
+#     # Number of vehicles out of service
+#     plot_retriever_data_counter(
+#         retriever_data['depot_container'], 'num_vehicles_out_of_service',
+#         title='Vehicles out of service',
+#         filename=os.path.join(save_path, 'num_vehicles_out_of_service'))
+#
+#     # Number of vehicles charging
+#     plot_retriever_data_counter(
+#         retriever_data['depot_container'], 'num_vehicles_charging',
+#         title='Vehicles charging',
+#         filename=os.path.join(save_path, 'num_vehicles_charging'))
+#
+#     # Number of vehicles ready
+#     plot_retriever_data_counter(
+#         retriever_data['depot_container'], 'num_vehicles_ready',
+#         title='Vehicles ready for service',
+#         filename=os.path.join(save_path, 'num_vehicles_ready'))
+#
+#     #         # Charging points
+#     #         for cp_id, cp_data in retriever_data['charging_points'].items():
+#     #             plot_retriever_data(
+#     #                 cp_data, 'num_vehicles',
+#     #                 title='Charging point %d (%s, %d): Number of vehicles' % (cp_id,
+#     #                     cp_data['params']['location'].name,
+#     #                     cp_data['params']['location'].ID),
+#     #                 filename=save_path + '\\' + 'charging_point_%03d_vehicles' % cp_id)
+#     #
+#     # Vehicles
+#     for vehicle_id, vehicle_data in retriever_data['vehicles'].items():
+#         # SoC
+#         # compile list of schedules
+#         schedules = [schedule.root_node.name for schedule in
+#                      vehicle_data['mission_list']]
+#         schedules_str = eflips.misc.list_to_string(schedules, ', ')
+#
+#         # lines = []
+#         # for schedule in vehicle_data['mission_list']:
+#         #     for line in schedule.root_node.lines:
+#         #         lines.append(line)
+#         # lines = list(set(lines))
+#         # lines_str = list_to_string(lines, ', ')
+#
+#         plot_soc(
+#             vehicle_data,
+#             title='Vehicle %d (%s); %s; total %d km; %.2f kWh/km' %
+#                   (vehicle_id,
+#                    vehicle_data['params']['vehicle_type'].name,
+#                    schedules_str,
+#                    list(
+#                        vehicle_data['log_data']['odo']['values'].values())[
+#                        -1],
+#                    list(vehicle_data['log_data'][
+#                             'specific_consumption_primary'][
+#                             'values'].values())[-1]),
+#             show=False, save=True,
+#             filename=os.path.join(save_path, 'soc_%03d' % vehicle_id))
+#
+#         # SoC with trip info
+#         plot_soc_with_trip_info(
+#             vehicle_data,
+#             title='Vehicle %d (%s): SoC; total %d km; %.2f kWh/km' %
+#                   (vehicle_id,
+#                    vehicle_data['params']['vehicle_type'].name,
+#                    list(
+#                        vehicle_data['log_data']['odo']['values'].values())[
+#                        -1],
+#                    list(vehicle_data['log_data'][
+#                             'specific_consumption_primary'][
+#                             'values'].values())[-1]),
+#             show=False, save=True, figuresize=cm2in(15, 15),
+#             filename=os.path.join(save_path,
+#                                   'soc_with_info_%03d' % vehicle_id))
+#
+#         # Delay
+#         plot_retriever_data(
+#             vehicle_data, 'delay',
+#             title='Vehicle %d (%s): Delay' % (vehicle_id,
+#                                               vehicle_data['params'][
+#                                                   'vehicle_type'].name),
+#             show=False, save=True,
+#             filename=os.path.join(save_path, 'delay_%03d' % vehicle_id))
+#
+# #             # # Capacity
+# #             plot_retriever_data(
+# #                 vehicle_data, 'capacity_primary',
+# #                 title='Vehicle %d (%s): Energy storage' % (vehicle_id,
+# #                     vehicle_data['params']['vehicle_type'].name),
+# #                 filename=save_path + '\\' + 'capacity_%03d' % vehicle_id)
+# #             #
+# #             # # SoC valid/critical
+# #             # plot_logger_data(
+# #             #     vehicle_data, 'soc_valid', 'soc_critical',
+# #             #     title='Vehicle %d (%s): Energy storage' % (vehicle_id,
+# #             #         vehicle_data['params']['vehicle_type'].name),
+# #             #     filename=save_path + '\\' + 'soc_valid_%03d' % vehicle_id)
+# #             #
+# #             # # Odo
+# #             # plot_logger_data(
+# #             #     vehicle_data, 'odo',
+# #             #     title='Vehicle %d (%s): Odometer' % (vehicle_id,
+# #             #         vehicle_data['params']['vehicle_type'].name),
+# #             #     filename=save_path + '\\' + 'odo_%03d' % vehicle_id)
+# #             #
+# #             # # Operation time
+# #             # plot_logger_data(
+# #             #     vehicle_data, 'operation_time',
+# #             #     title='Vehicle %d (%s): Operation time' % (vehicle_id,
+# #             #         vehicle_data['params']['vehicle_type'].name),
+# #             #     filename=save_path + '\\' +
+# #             #              'operation_time_%03d' % vehicle_id)
+# #             #
+# #             # # Control signals
+# #             # plot_logger_data(
+# #             #     vehicle_data, 'ignition_on', 'ac_request', 'driving',
+# #             #     title='Vehicle %d (%s): Control signals' % (vehicle_id,
+# #             #         vehicle_data['params']['vehicle_type'].name),
+# #             #     filename=save_path + '\\' +
+# #             #              'control_signals_%03d' % vehicle_id)
+# #             #
+# #             # # Power
+# #             plot_retriever_data(
+# #                 vehicle_data, 'traction_power', 'aux_power_primary',
+# #                 'total_power_primary',
+# #                 title='Vehicle %d (%s): Power' % (vehicle_id,
+# #                                                   vehicle_data['params'][
+# #                                                       'vehicle_type'].name),
+# #                 show=False, save=True,
+# #                 filename=save_path + '\\' + 'power_primary_%03d'
+# #                          % vehicle_id)
+# #             #
+# #             # try:
+# #             #     plot_logger_data(
+# #             #         vehicle_data, 'total_power_secondary',
+# #             #         title='Vehicle %d (%s): Power' % (vehicle_id,
+# #             #             vehicle_data['params']['vehicle_type'].name),
+# #             #         filename=save_path + '\\' + 'power_secondary_%03d'
+# #             #                  % vehicle_id)
+# #             # except KeyError:
+# #             #     pass
+# #             #
+# #             #
+# #             # # Energy consumed and charged
+# #             # plot_logger_data(
+# #             #     vehicle_data, 'energy_consumed_primary',
+# #             #     'energy_charged_primary',
+# #             #     title='Vehicle %d (%s): Energy' % (vehicle_id,
+# #             #         vehicle_data['params']['vehicle_type'].name),
+# #             #     filename=save_path + '\\' + 'energy_primary_%03d'
+# #             #              % vehicle_id)
+# #             #
+# #             # try:
+# #             #     plot_logger_data(
+# #             #         vehicle_data, 'energy_consumed_secondary',
+# #             #         'energy_charged_secondary',
+# #             #         title='Vehicle %d (%s): Energy' % (vehicle_id,
+# #             #             vehicle_data['params']['vehicle_type'].name),
+# #             #         filename=save_path + '\\' + 'energy_secondary_%03d'
+# #             #                  % vehicle_id)
+# #             # except KeyError:
+# #             #     pass
+# #             #
+# #             # plot_logger_data(
+# #             #     vehicle_data, 'specific_consumption_primary',
+# #             #     title='Vehicle %d (%s): Specific consumption' % (vehicle_id,
+# #             #         vehicle_data['params']['vehicle_type'].name),
+# #             #     filename=save_path + '\\' + 'spec_cons_primary_%03d'
+# #             #              % vehicle_id)
+#
+#     # Plot specific consumption
+#
+#     # OC and DC:
+#     retriever_data_list = []
+#     xticks = []
+#     for case in ['DC_base', 'OC_base']:
+#         retriever_data_list.append(simdata[case])
+#         xticks.append(case)
+#     ylabel = 'kWh/km'
+#     plot_specific_energy_consumption_fleet(
+#         retriever_data_list, xticks,
+#         xlabel='Case', ylabel=ylabel,
+#         title='Specific consumption', show=False, save=True,
+#         filename=os.path.join(out_path, 'specific_consumption_DC_OC'))
+#
+#     # Diesel:
+#     retriever_data_list = []
+#     xticks = []
+#     for case in ['diesel']:
+#         retriever_data_list.append(simdata[case])
+#         xticks.append(case)
+#     ylabel = 'L/km'
+#     plot_specific_energy_consumption_fleet(
+#         retriever_data_list, xticks,
+#         xlabel='Case', ylabel=ylabel,
+#         title='Specific consumption', show=False, save=True,
+#         filename=os.path.join(out_path, 'specific_consumption_diesel'))
+
+# def plot_num_schedules_and_vehicles(
+#         eval_data, case_names, title=None,
+#         category_colors=None, show=False, save=True,
+#         filename='vehicle_energy_state', formats=None):
+#     plot = Plot(show=show)
+#     cases = eval_data.keys()
+#     num_cases = len(cases)
+#
+#     # Get list of lines from first case
+#     lines = list(eval_data.values())[0].keys()
+#
+#     for line in lines:
+#         if line in ['M45', 'M49']:
+#             case_labels = []
+#             num_schedules = []
+#             num_vehicles_in_service = []
+#             num_vehicles_total = []
+#             for case, schedules_grid in schedules_per_line.items():
+#                 case_labels.append(case_names[case])
+#                 num_schedules.append(len(schedules_per_line[case][line][2].get_all()))
+#                 num_vehicles_in_service.append(eval_data[case][line]['depots'][1]['max_num_vehicles_in_service']['value'])
+#                 num_vehicles_total.append(sum(eval_data[case][line]['num_vehicles']['value'].values()))
+#
+#
+#             num_vehicles_plot = eflips.Plot(show=True)
+#
+#             ind = np.arange(len(schedules_per_line.keys()))
+#             width = 0.25
+#
+#             rects1 = num_vehicles_plot.axes.bar(ind-width, num_schedules, width,
+#                                                 label='Number of schedules')
+#             rects2 = num_vehicles_plot.axes.bar(ind, num_vehicles_in_service, width,
+#                                                 label='Number vehicles in service')
+#             rects3 = num_vehicles_plot.axes.bar(ind+width, num_vehicles_total, width,
+#                                                 label='Number of vehicles total')
+#
+#
+#             num_vehicles_plot.axes.set_xticks(ind)
+#             num_vehicles_plot.axes.set_xticklabels(case_labels)
+#             num_vehicles_plot.axes.set_title(line)
+#             num_vehicles_plot.axes.grid(which='major', axis='y')
+#             num_vehicles_plot.axes.set_axisbelow(True)
+#             num_vehicles_plot.axes.yaxis.set_major_locator(
+#                 matplotlib.ticker.MultipleLocator(base=2))
+#             num_vehicles_plot.axes.legend(frameon=True, loc='upper right')
+#             num_vehicles_plot.save(simdata_path + '\\' + 'num_vehicles_' + line)
