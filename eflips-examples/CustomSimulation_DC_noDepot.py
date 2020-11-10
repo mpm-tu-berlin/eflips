@@ -20,9 +20,9 @@ import os
 # -----------------------------------------------------------------------------
 
 # Modify paths and filenames as required:
-schedules_path = os.getcwd()
-schedules_file = 'test_schedules.pickle'
-output_path_base = os.getcwd()
+schedules_path = os.path.join(os.getcwd(), 'output')
+schedules_file = 'schedules_DC.pickle'
+output_path_base = os.path.join(os.getcwd(), 'output')
 
 output_path = os.path.join(output_path_base, 'Custom_Simulation_DC_noDepot')
 simdata_file = "simdata_DC_noDepot.pickle"

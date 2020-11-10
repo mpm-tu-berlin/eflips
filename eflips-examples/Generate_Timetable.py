@@ -14,7 +14,7 @@ import copy
 
 # Output will be placed in working directory; if desired, specify a different
 # directory here:
-output_path = os.getcwd()
+output_path = os.path.join(os.getcwd(), 'output')
 timetable_filename = 'timetable.pickle'
 timetable_text_file_name = 'timetable.txt'
 plot_filename = 'timetable'

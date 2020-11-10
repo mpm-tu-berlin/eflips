@@ -9,8 +9,9 @@ import os
 
 # Output will be placed in working directory; if desired, specify a different
 # directory here:
-output_path = os.getcwd()
-output_filename = 'test_schedules.pickle'
+output_path = os.path.join(os.getcwd(), 'output')
+output_filename = 'very_simple_schedules.pickle'
+
 
 # -----------------------------------------------------------------------------
 # Create a grid

@@ -20,14 +20,14 @@ import pandas as pd
 # -----------------------------------------------------------------------------
 
 # Modify paths and filenames as required:
-input_path = os.getcwd()
-schedules_file = 'test_schedules.pickle'
+schedules_path = os.path.join(os.getcwd(), 'output')
+schedules_file = 'schedules_DC.pickle'
 
 # Sample weather data file containing monthly average values for temperature
 # and insolation:
 weather_data_file = 'weather_data.csv'
 
-output_path_base = os.getcwd()
+output_path_base = os.path.join(os.getcwd(), 'output')
 
 output_path = os.path.join(output_path_base, 'BatchScheduleSimulation_DC')
 simdata_file = "BatchScheduleSimulation_DC.pickle"
@@ -47,14 +47,17 @@ eflips.misc.setup_logger(os.path.join(output_path, log_file),
 
 # Load schedules and grid
 grid, schedules = \
-    eflips.io.import_pickle(os.path.join(input_path, schedules_file))
+    eflips.io.import_pickle(os.path.join(schedules_path, schedules_file))
 
 # Load weather data (monthly average values for temperature and insolation)
-weather_data = pd.read_csv(os.path.join(input_path, weather_data_file))
+weather_data = pd.read_csv(weather_data_file)
 
 # -----------------------------------------------------------------------------
 # Define parameters
 # -----------------------------------------------------------------------------
+
+# Identify depot grid point
+depot_grid_point_id = grid.find_points('name', 'Depot')[0].ID
 
 # These are the same schedule simulation parameters as used in the
 # ScheduleSimulation_DC.py example script, but without the 'ambient_params'
@@ -128,18 +131,18 @@ schedule_simulation_params = {
         },
     },
     'charging_point_params': {
-        20: {  # Depot (GridPoint ID 20)
+        depot_grid_point_id: {
             'interface': 'plug',
             'capacity': 10
         }
     },
     'depot_params': {
         'charging': True,
-        'locations': [20],
+        'locations': [depot_grid_point_id],
         'driver_additional_paid_time': 1200  # seconds
     },
     'depot_charging_params': {
-        20: {
+        depot_grid_point_id: {
             'dead_time_before': 600,
             'dead_time_after': 600,
             'interrupt_charging': False

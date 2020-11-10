@@ -20,19 +20,19 @@ import os
 # Modify paths and filenames as required
 
 # Path to schedules (for total passenger trip distance)
-schedules_path = os.getcwd()
-schedules_file = 'test_schedules.pickle'
+schedules_path = os.path.join(os.getcwd(), 'output')
+schedules_file = 'schedules_DC.pickle'
 
 # Path to schedule simulation (for critical consumption vehicle/staff demand)
-critical_simulation_path = os.path.join(os.getcwd(), 'ScheduleSimulation_DC')
+critical_simulation_path = os.path.join(os.getcwd(), 'output', 'ScheduleSimulation_DC')
 critical_sim_data_file = 'ScheduleSimulation_DC.pickle'
 
 # Path to batch simulation (for annual energy consumption)
-batch_simulation_path = os.path.join(os.getcwd(), 'BatchScheduleSimulation_DC')
+batch_simulation_path = os.path.join(os.getcwd(), 'output', 'BatchScheduleSimulation_DC')
 batch_sim_data_file = 'BatchScheduleSimulation_DC.pickle'
 
 # Output path
-output_path_base = os.getcwd()
+output_path_base = os.path.join(os.getcwd(), 'output')
 output_path = os.path.join(output_path_base, 'TCO_Analysis_DC')
 tco_file = "TCO_DC.pickle"
 

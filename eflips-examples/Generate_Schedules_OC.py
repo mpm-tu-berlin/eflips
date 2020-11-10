@@ -9,14 +9,15 @@ import os
 # File paths
 # -----------------------------------------------------------------------------
 
-# Output will be placed in working directory; if desired, specify a different
-# directory here:
-timetable_path = os.getcwd()
+timetable_path = os.path.join(os.getcwd(), 'output')
 timetable_filename = 'timetable.pickle'
 
-output_path = os.getcwd()
+# Output will be placed in working directory; if desired, specify a different
+# directory here:
+output_path = os.path.join(os.getcwd(), 'output')
 schedule_filename = 'schedules_OC.pickle'
 schedule_text_tile_name = 'schedules_OC.txt'
+plot_filename = 'schedules_OC'
 
 # -----------------------------------------------------------------------------
 # Setup logger, load data
@@ -25,7 +26,7 @@ schedule_text_tile_name = 'schedules_OC.txt'
 # Setup logger. Set level='debug' for more detailed logging
 log_file = eflips.misc.generate_log_file_name(timestamp=True)
 eflips.misc.setup_logger(os.path.join(output_path, log_file),
-                          level='debug')
+                          level='warning')
 
 # Load timetable and grid
 grid, timetable = eflips.io.import_pickle(os.path.join(timetable_path,
@@ -90,3 +91,8 @@ schedules.export_text_file(os.path.join(output_path, schedule_text_tile_name))
 # Export schedules as pickle
 eflips.io.export_pickle(os.path.join(output_path, schedule_filename),
                          (grid, schedules))
+
+# Plot schedules
+eflips.evaluation.plot_schedule_time(
+    schedules, separate_trips=True, save=True,
+    filename=os.path.join(output_path, plot_filename))

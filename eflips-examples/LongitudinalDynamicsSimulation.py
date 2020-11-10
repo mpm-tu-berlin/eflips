@@ -14,8 +14,8 @@ import numpy as np
 # -----------------------------------------------------------------------------
 
 # Modify paths and filenames as required:
-driving_profile_file = '../driving_cycles/sort2.csv'
-output_path_base = os.getcwd()
+driving_profile_file = 'sort2.csv'
+output_path_base = os.path.join(os.getcwd(), 'output')
 
 output_path = os.path.join(output_path_base, 'LDM_Simulation')
 simdata_file = "simdata_LDM.pickle"

@@ -14,9 +14,9 @@ import os
 # -----------------------------------------------------------------------------
 
 # Modify paths and filenames as required:
-schedules_path = os.getcwd()
-schedules_file = 'test_schedules.pickle'
-output_path_base = os.getcwd()
+schedules_path = os.path.join(os.getcwd(), 'output')
+schedules_file = 'schedules_OC.pickle'
+output_path_base = os.path.join(os.getcwd(), 'output')
 
 output_path = os.path.join(output_path_base, 'ScheduleSimulation_OC')
 simdata_file = "ScheduleSimulation_OC.pickle"
@@ -45,8 +45,11 @@ grid, schedules = eflips.io.import_pickle(os.path.join(schedules_path,
 
 ambient_temperature = -10  # °C
 
-# We wish to place charging stations at the stops named 'A2' and 'J1':
-charging_point_location_names = ['A2', 'J1']
+# Identify depot grid point
+depot_grid_point_id = grid.find_points('name', 'Depot')[0].ID
+
+# We wish to place charging stations at the stops named 'A' and 'Z':
+charging_point_location_names = ['A', 'Z']
 
 schedule_simulation_params = {
     'simulation_params': {
@@ -127,7 +130,7 @@ schedule_simulation_params = {
         },
     },
     'charging_point_params': {
-        20: {  # Depot (GridPoint ID 20)
+        depot_grid_point_id: {
             'interface': 'plug',
             'capacity': 10
         }
@@ -136,11 +139,11 @@ schedule_simulation_params = {
     },
     'depot_params': {
         'charging': True,
-        'locations': [20],
+        'locations': [depot_grid_point_id],
         'driver_additional_paid_time': 1200  # seconds
     },
     'depot_charging_params': {
-        20: {
+        depot_grid_point_id: {
             'dead_time_before': 600,
             'dead_time_after': 600,
             'interrupt_charging': False

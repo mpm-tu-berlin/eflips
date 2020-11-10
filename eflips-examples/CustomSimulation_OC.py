@@ -18,9 +18,9 @@ import os
 # Generate_Schedules_and_Grid.py.
 
 # Modify paths and filenames as required:
-schedules_path = os.getcwd()
-schedules_file = 'test_schedules.pickle'
-output_path_base = os.getcwd()
+schedules_path = os.path.join(os.getcwd(), 'output')
+schedules_file = 'schedules_OC.pickle'
+output_path_base = os.path.join(os.getcwd(), 'output')
 
 output_path = os.path.join(output_path_base, 'Custom_Simulation_OC')
 simdata_file = "simdata_OC.pickle"
@@ -103,7 +103,7 @@ vehicle_params = {
 
     # List of charging interfaces; see energy.ChargingInterfaceTypes
     # class documentation for details:
-    'charging_interfaces': ['pantograph_300', 'plug'],
+    'charging_interfaces': ['pantograph', 'plug'],
 
     # Overall UA value (heat transmittance) of bus chassis for
     # heat transfer calculation:
@@ -133,7 +133,7 @@ vehicle_params = {
     }
 }
 
-charging_station_location_names = ['A2', 'J1']
+charging_station_location_names = ['A', 'Z']
 charging_station_interface = eflips.ChargingInterfaceTypes.pantograph
 charging_station_capacity = 2
 

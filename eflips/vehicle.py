@@ -1118,6 +1118,10 @@ class SimpleVehicle(VehicleAbstract):
         return self.subsystem_primary.controller.energy_from_interface_net
 
     @property
+    def energy_charged_primary(self):
+        return self.subsystem_primary.controller.energy_from_interface_net
+
+    @property
     def energy_charged_secondary(self):
         if hasattr(self, 'subsystem_secondary'):
             return self.subsystem_secondary.controller.energy_from_interface_net
