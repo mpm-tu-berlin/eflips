@@ -151,7 +151,7 @@ cost_data = {
 # We currently need to extract this data from the schedules as the batch
 # simulation does not keep track of different trip types.
 production_data = {
-    'fleet_mileage_productive': schedules.distance(trip_type='passengerTrip') * 365
+    'fleet_mileage_productive': schedules.distance(trip_type='passenger') * 365
 }
 
 # Vehicle demand from critical schedule simulation

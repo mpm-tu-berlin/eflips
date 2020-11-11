@@ -106,7 +106,7 @@ while current_time <= last_departure:
     # Attributes 'vehicle_type' and 'direction' are optional, but vehicle_type
     # is later required for scheduling and direction is required for
     # plotting a graphical timetable.
-    trip_outbound = eflips.TripNode(None, trip_id, 'passengerTrip',
+    trip_outbound = eflips.TripNode(None, trip_id, 'passenger',
                                      line=line,
                                      vehicle_type=vehicle_type,
                                      direction=outbound_direction)
@@ -124,7 +124,7 @@ while current_time <= last_departure:
     trip_list.append(trip_outbound)
     trip_id += 1
 
-    trip_return = eflips.TripNode(None, trip_id, 'passengerTrip',
+    trip_return = eflips.TripNode(None, trip_id, 'passenger',
                                    line=line,
                                    vehicle_type=vehicle_type,
                                    direction=return_direction)

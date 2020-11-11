@@ -658,25 +658,25 @@ class LineMonitor:
             self.logger = DataLogger(self.env, self)
 
     def start_trip(self, _, trip_node):
-        if trip_node.trip_type == 'passengerTrip':
+        if trip_node.trip_type == 'passenger':
             if hasattr(trip_node, 'line'):
                 if not trip_node.line in self.trips_per_line:
                     self.trips_per_line.update({trip_node.line: 0})
                 self.trips_per_line[trip_node.line] += 1
-        elif trip_node.trip_type == 'emptyTrip':
+        elif trip_node.trip_type == 'empty':
             if not 'empty' in self.trips_per_line:
                 self.trips_per_line.update({'empty': 0})
             self.trips_per_line['empty'] += 1
         self.state_change_event()
 
     def end_trip(self, _, trip_node):
-        if trip_node.trip_type == 'passengerTrip':
+        if trip_node.trip_type == 'passenger':
             if hasattr(trip_node, 'line'):
                 if not trip_node.line in self.trips_per_line:
                     self.trips_per_line.update({trip_node.line: 0})
                 else:
                     self.trips_per_line[trip_node.line] -= 1
-        elif trip_node.trip_type == 'emptyTrip':
+        elif trip_node.trip_type == 'empty':
             if not 'empty' in self.trips_per_line:
                 self.trips_per_line.update({'empty': 0})
             else:

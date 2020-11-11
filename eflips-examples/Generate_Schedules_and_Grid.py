@@ -134,9 +134,9 @@ for i in range(num_schedules):
 
     for j, trip in enumerate(trip_relations):
         if j == 0 or j == num_trips_in_schedule - 1:
-            trip_type = 'emptyTrip'
+            trip_type = 'empty'
         else:
-            trip_type = 'passengerTrip'
+            trip_type = 'passenger'
 
         if j == 0 or j == num_trips_in_schedule - 1 or j == num_trips_in_schedule - 2:
             pause = 0

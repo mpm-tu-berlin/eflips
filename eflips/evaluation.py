@@ -1249,9 +1249,9 @@ def plot_schedule_time(schedule_container, separate_trips=False, display_lines=N
                 x_width = trip.arrival.getSeconds() - x
                 trip_range = (x, x_width)
 
-                if trip.trip_type == 'emptyTrip':
+                if trip.trip_type == 'empty':
                     empty_trips.append(trip_range)
-                if trip.trip_type == 'passengerTrip':
+                if trip.trip_type == 'passenger':
                     passenger_trips[trip.line].append(trip_range)
                     if display_lines == 'bar':
                         plot.axes.text(x, y_ticks[i], trip.line, fontsize=6, fontweight='bold', color='white')
@@ -1283,9 +1283,9 @@ def plot_schedule_time(schedule_container, separate_trips=False, display_lines=N
                     x_width = trips[j - 1].arrival.getSeconds() - x
                     trip_range = (x, x_width)
 
-                    if trip_type == 'emptyTrip':
+                    if trip_type == 'empty':
                         empty_trips.append(trip_range)
-                    if trip_type == 'passengerTrip':
+                    if trip_type == 'passenger':
                         passenger_trips[line].append(trip_range)
                         if display_lines == 'bar':
                             plot.axes.annotate(line, xy=(x + x_width / 2, y_ticks[i]), va='center', ha='center',
@@ -1297,9 +1297,9 @@ def plot_schedule_time(schedule_container, separate_trips=False, display_lines=N
             x_width = trips[len(trips) - 1].arrival.getSeconds() - x
             trip_range = (x, x_width)
 
-            if trip_type == 'emptyTrip':
+            if trip_type == 'empty':
                 empty_trips.append(trip_range)
-            if trip_type == 'passengerTrip':
+            if trip_type == 'passenger':
                 passenger_trips[line].append(trip_range)
                 if display_lines == 'bar':
                     plot.axes.annotate(line, xy=(x + x_width / 2, y_ticks[i]), va='center', ha='center',
@@ -1402,7 +1402,7 @@ def plot_schedule_distance(schedule_container, show_xticks=True, add_bar_labels=
     return plot
 
 
-def plot_pause_durations_histogram(trip_list, trip_type='passengerTrip',
+def plot_pause_durations_histogram(trip_list, trip_type='passenger',
                                    bins=None,
                                    title='Pause durations',
                                    xlabel='Duration (min)', ylabel='No. trips',
@@ -1555,9 +1555,9 @@ def plot_vehicle_occupation(retriever_data, separate_trips=False, display=None,
                     x_width = trip.arrival.getSeconds() - x
                     trip_range = (x, x_width)
 
-                    if trip.trip_type == 'emptyTrip':
+                    if trip.trip_type == 'empty':
                         empty_trips.append(trip_range)
-                    if trip.trip_type == 'passengerTrip':
+                    if trip.trip_type == 'passenger':
                         passenger_trips[trip.line].append(trip_range)
                         if display == 'line_bar':
                             plot.axes.annotate(trip.line, xy=(x + x_width / 2, y_ticks[vehicle_id - 1]),
@@ -1585,16 +1585,16 @@ def plot_vehicle_occupation(retriever_data, separate_trips=False, display=None,
                 passenger_trips = {trip.line: [] for trip in schedule.root_node.children}
                 empty_trips = []
                 trip_type = trips[0].trip_type
-                line = trips[0].line if trip_type == 'passengerTrip' else None
+                line = trips[0].line if trip_type == 'passenger' else None
                 x = trips[0].departure.getSeconds()
                 for j in range(1, len(trips)):
                     if trips[j].trip_type != trip_type or trips[j].line != line:
                         x_width = trips[j - 1].arrival.getSeconds() - x
                         trip_range = (x, x_width)
 
-                        if trip_type == 'emptyTrip':
+                        if trip_type == 'empty':
                             empty_trips.append(trip_range)
-                        if trip_type == 'passengerTrip':
+                        if trip_type == 'passenger':
                             passenger_trips[line].append(trip_range)
                             if display == 'line_bar':
                                 plot.axes.annotate(line, xy=(x + x_width / 2, y_ticks[vehicle_id - 1]),
@@ -1607,14 +1607,14 @@ def plot_vehicle_occupation(retriever_data, separate_trips=False, display=None,
 
                         x = trips[j].departure.getSeconds()
                         trip_type = trips[j].trip_type
-                        line = trips[j].line if trip_type == 'passengerTrip' else None
+                        line = trips[j].line if trip_type == 'passenger' else None
 
                 x_width = trips[len(trips) - 1].arrival.getSeconds() - x
                 trip_range = (x, x_width)
 
-                if trip_type == 'emptyTrip':
+                if trip_type == 'empty':
                     empty_trips.append(trip_range)
-                if trip_type == 'passengerTrip':
+                if trip_type == 'passenger':
                     passenger_trips[line].append(trip_range)
                     if display == 'line_bar':
                         plot.axes.annotate(line, xy=(x + x_width / 2, y_ticks[vehicle_id - 1]),
@@ -1881,7 +1881,7 @@ def plot_vehicle_types_per_line(arg,
 
         vehicle_types_lines = np.zeros((i, j))
         for trip in trip_nodes:
-            if trip.trip_type == 'passengerTrip':
+            if trip.trip_type == 'passenger':
                 i = vehicle_type_index[trip.vehicle_type]
                 j = line_index[trip.line]
                 vehicle_types_lines[i][j] += 1
@@ -1899,7 +1899,7 @@ def plot_vehicle_types_per_line(arg,
         vehicle_types_lines = np.zeros((i, j))
         for schedule in schedules:
             for trip in schedule.root_node.children:
-                if trip.trip_type == 'passengerTrip':
+                if trip.trip_type == 'passenger':
                     i = vehicle_type_index[schedule.root_node.vehicle_type]
                     j = line_index[trip.line]
                     vehicle_types_lines[i][j] += 1
@@ -1949,7 +1949,7 @@ def count_arrivals_per_terminus(arg, include_empty_trips=False):
                      'by_gridpoint_id': {}}
 
     for trip in trip_nodes:
-        if not include_empty_trips and trip.trip_type == 'emptyTrip':
+        if not include_empty_trips and trip.trip_type == 'empty':
             continue
 
         if not trip.destination.name in arrival_count['by_name']:

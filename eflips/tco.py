@@ -162,10 +162,22 @@ def simple_tco(object_eval_data, ignore_charging_points, daily_distance,
     cp_list = []
     for cp_data in object_eval_data['charging_points'].values():
         if cp_data['location'].name not in ignore_charging_points:
-            if cp_data['max_occupation'] > 0:
-                num_charging_stations += 1
-                num_charging_slots += cp_data['max_occupation']
-                cp_list.append(cp_data['location'].name)
+            # Previously, charging stations would only be counted if they
+            # were actually used. This defeats the purpose of the genetic
+            # algorithm that this TCO function was developed for!
+            # Changed such that construction cost for charging STATIONS is
+            # always considered, regardless of whether it is used or not.
+            # The number of charging SLOTS is, however, evaluated based on
+            # the actual occupation. This way, the algorithm can get rid of
+            # unused charging locations.
+            num_charging_stations += 1
+            num_charging_slots += cp_data['max_occupation']
+            cp_list.append(cp_data['location'].name)
+            # Previous code:
+            # if cp_data['max_occupation'] > 0:
+            #     num_charging_stations += 1
+            #     num_charging_slots += cp_data['max_occupation']
+            #     cp_list.append(cp_data['location'].name)
 
     # for cp_name, occupation in charging_point_occupation_grouped.items():
     #     if cp_name not in ignore_charging_points:
@@ -212,12 +224,7 @@ def simple_tco(object_eval_data, ignore_charging_points, daily_distance,
     print('    Vehicle maintenance: %.4f' % c_vehicles_maintenance)
     print('    Total: %.4f\n' % c_total)
 
-    return {'c_total': c_total,
-            'c_vehicles_invest': c_vehicles_invest,
-            'c_vehicles_maintenance': c_vehicles_maintenance,
-            'c_vehicles_energy': c_vehicles_energy,
-            'c_vehicles_driver': c_vehicles_driver,
-            'c_infra_invest': c_infra_invest}
+    return c_total
 
 
 class TCO:

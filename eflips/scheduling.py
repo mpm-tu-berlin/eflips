@@ -502,7 +502,7 @@ def generate_schedules_singledepot(timetable, grid, params,
         schedule_id += 1
 
     # Put all schedules into a ScheduleContainer and return
-    return ScheduleContainer(save_schedules), grid
+    return grid, ScheduleContainer(save_schedules)
 
 def _capacity(schedule_node, params):
     """Return the minimum capacity encountered during schedule."""
@@ -732,7 +732,7 @@ def _add_deadhead_trip(schedule_node, line, connecting_grid_point,
     duration = ceil(distance / params['scheduling_params']
                     ['default_deadhead_trip_velocity'] * 60) * 60
 
-    trip_node = TripNode(None, next_deadhead_trip_id, 'emptyTrip',
+    trip_node = TripNode(None, next_deadhead_trip_id, 'empty',
                          vehicle_type=vehicle_type, line=line,
                          charge=False)
     next_deadhead_trip_id += 1
@@ -879,7 +879,7 @@ def _concatenate_schedules(schedule1, schedule2, grid, depot_trip_segments,
     origin = None
     destination = None
     for trip_node in reversed(schedule1.root_node.children):
-        if trip_node.trip_type == 'passengerTrip':
+        if trip_node.trip_type == 'passenger':
             origin = trip_node.destination
             arrival = trip_node.arrival
             line1 = trip_node.line
@@ -890,7 +890,7 @@ def _concatenate_schedules(schedule1, schedule2, grid, depot_trip_segments,
             break
 
     for trip_node in schedule2.root_node.children:
-        if trip_node.trip_type == 'passengerTrip':
+        if trip_node.trip_type == 'passenger':
             destination = trip_node.origin
             departure = trip_node.departure
             line2 = trip_node.line
@@ -936,15 +936,15 @@ def _concatenate_schedules(schedule1, schedule2, grid, depot_trip_segments,
     # schedule 1 and from the beginning of schedule 2:
     for trip_node in reversed(
             schedule1_copy.root_node.children.copy()):
-        if trip_node.trip_type == 'emptyTrip':
+        if trip_node.trip_type == 'empty':
             schedule1_copy.root_node.children.remove(trip_node)
-        elif trip_node.trip_type == 'passengerTrip':
+        elif trip_node.trip_type == 'passenger':
             # Stop here to avoid deleting all but the last deadhead trips
             break
     for trip_node in schedule2_copy.root_node.children.copy():
-        if trip_node.trip_type == 'emptyTrip':
+        if trip_node.trip_type == 'empty':
             schedule2_copy.root_node.children.remove(trip_node)
-        elif trip_node.trip_type == 'passengerTrip':
+        elif trip_node.trip_type == 'passenger':
             # Stop here to avoid deleting all but the first deadhead trips
             break
 
@@ -984,7 +984,7 @@ def _concatenate_schedules(schedule1, schedule2, grid, depot_trip_segments,
 def _count_passenger_trips(schedule_node):
     res = 0
     for trip_node in schedule_node.children:
-        if trip_node.trip_type == 'passengerTrip':
+        if trip_node.trip_type == 'passenger':
             res += 1
     return res
 
@@ -995,7 +995,7 @@ def _last_arrival_time(schedule):
     """Return arrival time of last passenger trip."""
     ok = False
     for trip_node in reversed(schedule.root_node.children):
-        if trip_node.trip_type == 'passengerTrip':
+        if trip_node.trip_type == 'passenger':
             ok = True
             break
     if not ok:
@@ -1007,7 +1007,7 @@ def _first_departure_time(schedule):
     """Return departure time of first passenger trip."""
     ok = False
     for trip_node in schedule.root_node.children:
-        if trip_node.trip_type == 'passengerTrip':
+        if trip_node.trip_type == 'passenger':
             ok = True
             break
     if not ok:

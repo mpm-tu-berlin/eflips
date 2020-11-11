@@ -174,7 +174,7 @@ def trip_info_str(trip_node):
         trip_node.distance,
         trip_node.line if hasattr(trip_node, 'line') else 0,
         trip_node.vehicle_type if hasattr(trip_node, 'vehicle_type') else '',
-        'E' if trip_node.trip_type == 'emptyTrip' else '',
+        'E' if trip_node.trip_type == 'empty' else '',
         trip_node.origin.name,
         trip_node.origin.ID,
         trip_node.destination.name, trip_node.destination.ID
@@ -300,7 +300,7 @@ class ScheduleContainer:
         duration_total = 0
         for schedule in self._schedule_list:
             for trip in schedule.root_node.children:
-                if trip.trip_type == 'passengerTrip':
+                if trip.trip_type == 'passenger':
                     duration_passenger_trips += trip.duration
                 duration_total += trip.duration
         return duration_passenger_trips/duration_total
@@ -346,7 +346,7 @@ class ScheduleContainer:
     def duration(self):
         return sum([schedule.root_node.duration for schedule in self._schedule_list])
 
-    def generate_timetable(self, trip_type='passengerTrip', zero_pauses=True):
+    def generate_timetable(self, trip_type='passenger', zero_pauses=True):
         """Filtering the object ScheduleContainer the keep only one type of trip and make the data construction simpler.
 
         :param trip_type: type of trip to keep

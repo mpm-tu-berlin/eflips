@@ -82,7 +82,7 @@ scheduler_params = {
 osm_cache = eflips.scheduling.generate_osm_cache()
 
 # Invoke scheduler
-schedules, grid = eflips.scheduling.generate_schedules_singledepot(
+grid, schedules = eflips.scheduling.generate_schedules_singledepot(
     timetable, grid, scheduler_params, osm_cache)
 
 # Export text file of schedules

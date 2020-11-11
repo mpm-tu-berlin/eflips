@@ -76,6 +76,12 @@ Before generating schedules, we must create a timetable. This is demonstrated in
 Charging Station Optimisation
 -----------------------------
 
+``ChargingStationOptimisation.py`` demonstrates how to determine cost-optimised charging point locations for opportunity charging using the ``ChargingInfrastructureIterator`` class. ``ChargingInfrastructureIterator`` treats every combination of charging locations as a separate scheduling problem for which schedules are created and a simulation and TCO evaluation are carried out. A genetic algorithm is used to find the most cost-effective combination of charging locations. Thus, the charging optimisation requires an extensive parameter set including scheduling, simulation and TCO parameters.
+
+*Note:* When using the "Run File in Python Console" feature in PyCharm under Windows, the Python process created when executing the script may "hang" once finished. This appears to be a bug in PyCharm that occurs when using the ``multiprocessing`` module. Before the script can be re-run, all Python processes opened by it have to be killed manually using the Windows Task Manager. Use the normal "Run" command to prevent this from happening. (If you have selected "Run File in Python Console" before, you must untick "Run with Python Console" in "Run > Edit Configurations".)
+
+A timetable is required to run this script, so ``Generate_Timetable.py`` has to be executed once before.
+
 
 
 
