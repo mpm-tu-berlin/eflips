@@ -11,3 +11,6 @@ Describe in detail how to configure and execute schedule simulations:
 * Running simulation
 * Saving simulation data
 * Evaluating and plotting simulation data
+
+.. autoclass:: eflips.simulation.ScheduleSimulation
+    :members: __init__

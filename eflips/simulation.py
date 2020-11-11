@@ -18,7 +18,20 @@ from eflips.vehicle import VehicleType, Fleet
 
 
 class ScheduleSimulation:
-    """Class for schedule/fleet simulation, typically one day."""
+    """High-level class for schedule simulation.
+
+    :param dict params: Dictionary of schedule simulation parameters. See below for a template.
+    :param eflips.schedule.ScheduleContainer schedules: The schedules to be simulated.
+    :param eflips.grid.Grid grid: The grid pertaining to the schedules.
+    :param eflips.schedule.ChargingSchedule charging_schedule: Optional charging schedule.
+
+
+    Template for ``params``: ::
+
+        params = {'test1': 'test',
+                  'test2': 'test'}
+
+    """
     def __init__(self, params, schedules, grid, charging_schedule=None):
         logger = logging.getLogger('simulation_logger')
         logger.debug('Initialising ScheduleSimulation')
