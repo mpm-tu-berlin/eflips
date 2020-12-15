@@ -4,7 +4,7 @@ Getting Started
 ..
     Introduce example simulation scripts; explain structure of scripts, resulting data logging/evaluation objects, and plots. Link to in-depth class documentation where appropriate.
 
-To get started with eFLIPS, it is best to take a look at and execute the example scripts provided in the ``eflips-examples`` folder obtainable at the `GitHub repository <https://github.com/mpm-tu-berlin/eflips>`_.
+To get started with eFLIPS, it is best to take a look at and execute the example scripts provided in the ``eflips-examples`` folder obtainable at the `GitHub repository <https://github.com/mpm-tu-berlin/eflips>`_. (Unfortunately, GitHub currently does not allow downloading selected folders. Instead, download the entire repository as a zip archive and extract only the ``eflips-examples`` folder.)
 
 It is recommended to execute the scripts in a manner that leaves the variables in memory. This way, you can familiarise yourself with the objects and data created by eFLIPS. In PyCharm, for example, this is achieved by right-clicking in the editor and choosing 'Run File in Python Console'.
 

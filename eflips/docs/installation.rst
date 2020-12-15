@@ -11,13 +11,22 @@ We recommend using the standard Python installation from `python.org <https://ww
 
 When working with virtual environments, it is important **not** to add Python to the system PATH, so be sure to choose the installation settings accordingly.
 
-To install the packages required for ``eflips`` into the virtual environment, invoke:
+To install ``eflips``, navigate to the ``Scripts`` directory within your virtual environment and invoke
 
 .. code-block:: none
 
+    C:\Users\djefferies\venv_python38_eflips\Scripts> pip install git+https://github.com/mpm-tu-berlin/eflips
+
+If you don't have access to the github repository, contact one of the maintainers.
+
+..
+    To install the packages required for ``eflips`` into the virtual environment, invoke:
+..
+    .. code-block:: none
+..
     C:\Users\djefferies\venv_python38_eflips\Scripts> pip install -r path_to_requirements_txt_file
 
-If this produces errors like the following one, delete your virtual environment folder, uninstall Python and choose an older Python version:
+If the installation produces errors like the following one, delete your virtual environment folder, uninstall Python and choose an older Python version:
 
 .. code-block:: none
 
