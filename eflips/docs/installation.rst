@@ -1,6 +1,8 @@
 Installation
 ============
 
+This section describes installation of eFLIPS **as an end-user**. If you wish to contribute to and modify eFLIPS's code, see the :ref:`Developer's Guide <developer_guide>`.
+
 eFLIPS was tested with Python 3.8 and 3.7. It depends on various other packages declared in ``requirements.txt`` in the ``eflips`` folder. Please be aware that when using very new releases of Python, some packages containing binaries (especially ``matplotlib``) may require compilation as long as precompiled binaries for the respective Python release are not available. In this case, ``pip``, the package installer, will attempt to compile the binaries automatically, but this often causes problems in our experience. Should this happen, use an older version of Python.
 
 We recommend using the standard Python installation from `python.org <https://www.python.org/>`_ and creating a virtual environment with `venv <https://docs.python.org/3/library/venv.html>`_, using, e.g.:
@@ -19,21 +21,14 @@ To install ``eflips``, navigate to the ``Scripts`` directory within your virtual
 
 If you don't have access to the github repository, contact one of the maintainers.
 
-..
-    To install the packages required for ``eflips`` into the virtual environment, invoke:
-..
-    .. code-block:: none
-..
-    C:\Users\djefferies\venv_python38_eflips\Scripts> pip install -r path_to_requirements_txt_file
-
-If the installation produces errors like the following one, delete your virtual environment folder, uninstall Python and choose an older Python version:
+Should the installation produce errors like the following one, delete your virtual environment folder, uninstall Python and choose an older Python version:
 
 .. code-block:: none
 
     error: Microsoft Visual C++ 14.0 is required. Get it with "Build Tools for Visual Studio":
     https://visualstudio.microsoft.com/downloads/
 
-Once successfully installed, configure the interpreter settings in your IDE to use the ``python.exe`` in the ``Scripts`` directory of your virtual environment as the interpreter.
+Once successfully installed, configure the interpreter settings in your IDE to use the ``python.exe`` in the ``Scripts`` directory of your virtual environment as the interpreter for your project.
 
 In your IDE, open a Python console and make sure the ``eflips`` folder's parent folder is within the module search path (usually, the IDE takes care of this if your project is correctly configured). To manually add a folder to the search path, enter:
 

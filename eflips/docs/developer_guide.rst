@@ -1,3 +1,5 @@
+.. _developer_guide:
+
 Developer's Guide
 =================
 
@@ -8,8 +10,8 @@ If you are actively involved in eFLIPS development, you will most likely face th
 
 #. You are working in your own GIT repository containing scripts for your simulation activities.
 #. You wish to use the package ``eflips`` as well as any other packages containing operator-specific functionality in your scripts, using simple ``import xyz`` statements.
-#. You wish to be able to modify ``eflips`` code from within your main IDE project environment, i.e. without switching between several project environments.
-#. You wish to be able to pull and push ``eflips`` code from/to the 'proper' repository at ``https://github.com/mpm-tu-berlin/eflips``.
+#. You wish to be able to modify ``eflips`` code from within your IDE's main project environment, i.e. without switching between several project environments.
+#. You wish to conveniently pull and push ``eflips`` code from/to its own repository at ``https://github.com/mpm-tu-berlin/eflips``.
 
 We can achieve this using a combination of GIT submodules and symbolic links (symlinks). The following tutorial walks you through creating a GIT repository of your own, configuring ``eflips`` as a submodule and creating symbolic links to include it in the module search path.
 
@@ -22,153 +24,13 @@ First, if using Windows 10, make sure to enable Developer Mode in *Settings > Fo
 
 Otherwise, you will require admin privileges to create symlinks.
 
-Now, create a GIT repository on your platform of choice. For this example, we use TU Berlin's GitLab service to create a ``test-project``. Make a local clone of the project **and enable symlink support**:
+Now, create a GIT repository on your platform of choice. For this example, we create a repository called ``test-project``. Make a local clone of the repository **and enable symlink support**:
 
 .. code-block:: none
 
     D:\GIT> git clone --config core.symlinks=true <url_to_repository>
 
-Add a ``.gitignore`` file to the newly created folder. This modified GitHub template works perfectly for us:
-
-.. code-block:: none
-
-    # Byte-compiled / optimized / DLL files
-    **/__pycache__/
-    *.py[cod]
-    *$py.class
-
-    # C extensions
-    *.so
-
-    # Distribution / packaging
-    .Python
-    build/
-    develop-eggs/
-    dist/
-    downloads/
-    eggs/
-    .eggs/
-    lib/
-    lib64/
-    parts/
-    sdist/
-    var/
-    wheels/
-    pip-wheel-metadata/
-    share/python-wheels/
-    *.egg-info/
-    .installed.cfg
-    *.egg
-    MANIFEST
-
-    # PyInstaller
-    #  Usually these files are written by a python script from a template
-    #  before PyInstaller builds the exe, so as to inject date/other infos into it.
-    *.manifest
-    *.spec
-
-    # Installer logs
-    pip-log.txt
-    pip-delete-this-directory.txt
-
-    # Unit test / coverage reports
-    **/htmlcov/
-    **/.tox/
-    **/.nox/
-    .coverage
-    .coverage.*
-    .cache
-    nosetests.xml
-    coverage.xml
-    *.cover
-    *.py,cover
-    **/.hypothesis/
-    **/.pytest_cache/
-
-    # Translations
-    *.mo
-    *.pot
-
-    # Django stuff:
-    *.log
-    local_settings.py
-    db.sqlite3
-    db.sqlite3-journal
-
-    # Flask stuff:
-    **/instance/
-    .webassets-cache
-
-    # Scrapy stuff:
-    .scrapy
-
-    # Sphinx documentation
-    **/docs/_build/
-
-    # PyBuilder
-    **/target/
-
-    # Jupyter Notebook
-    .ipynb_checkpoints
-
-    # IPython
-    **/profile_default/
-    ipython_config.py
-
-    # pyenv
-    .python-version
-
-    # pipenv
-    #   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-    #   However, in case of collaboration, if having platform-specific dependencies or dependencies
-    #   having no cross-platform support, pipenv may install dependencies that don't work, or not
-    #   install all needed dependencies.
-    #Pipfile.lock
-
-    # PEP 582; used by e.g. github.com/David-OConnor/pyflow
-    **/__pypackages__/
-
-    # Celery stuff
-    celerybeat-schedule
-    celerybeat.pid
-
-    # SageMath parsed files
-    *.sage.py
-
-    # Environments
-    .env
-    .venv
-    **/env/
-    **/venv/
-    **/ENV/
-    **/env.bak/
-    **/venv.bak/
-
-    # Spyder project settings
-    .spyderproject
-    .spyproject
-
-    # Rope project settings
-    .ropeproject
-
-    # mkdocs documentation
-    /site
-
-    # mypy
-    **/.mypy_cache/
-    .dmypy.json
-    dmypy.json
-
-    # Pyre type checker
-    **/.pyre/
-
-    # PyCharm
-    **/.idea/
-
-    # eflips build script
-    build_wheel.bat
-
-Commit and push:
+Add a ``.gitignore`` file to the newly created folder. :ref:`This modified GitHub template <gitignore_template>` works perfectly for us. Then, commit and push:
 
 .. code-block:: none
 
@@ -189,11 +51,21 @@ Now, include ``eflips`` as a GIT submodule in your own repository, **but be sure
 
     D:\GIT\test-project> git submodule add https://github.com/mpm-tu-berlin/eflips.git eflips-git
 
-You may notice the ``eflips`` package is now found in the ``test-project/eflips-git/eflips`` folder. However, we want it to appear on the top level, otherwise it won't be within the module search path (unless we fiddle around with ``sys.path.append()`` at the top of every script - no thanks...). This is where symbolic links come into play. Create a **relative** symlink using:
+You may notice the actual ``eflips`` Python package is now found in the ``test-project/eflips-git/eflips`` folder. However, we want it to appear on the top level, otherwise it won't be within the module search path (unless we fiddle around with ``sys.path.append()`` at the top of every script - no thanks...). This is where symbolic links come into play. Create a **relative** symlink using:
 
 .. code-block:: none
 
     D:\GIT\test-project> mklink /D eflips "eflips-git\eflips"
+
+We have now have a top-level ``eflips`` folder that redirects to the actual folder deeper down the tree. Now, you could commit and push again:
+
+.. code-block:: none
+
+    D:\GIT\test-project> git add .
+    D:\GIT\test-project> git commit -m "Added eflips submodule and symlink"
+    D:\GIT\test-project> git push
+
+Symbolic links are committed to the GIT repository and preserved when cloning the repository *(provided the user enables symbolic links as shown above)*.
 
 If you now create a project in your favourite IDE with ``test-project`` as the root folder, opening a console and typing
 
@@ -201,13 +73,22 @@ If you now create a project in your favourite IDE with ``test-project`` as the r
 
     import eflips
 
-should yield success, provided you have installed all dependencies into your Python environment. A ``requirements.txt`` file is provided for this. Assuming you have installed a Python virtual environment into a ``venv`` subfolder in your repository, invoke:
+should yield success, provided you have installed all of ``eflips``'s dependencies into your Python environment. A ``requirements.txt`` file is provided for this. Assuming you have already installed a Python virtual environment into a ``venv`` subfolder of your ``test-project``, invoke:
 
 .. code-block:: none
 
     D:\GIT\test-project\venv\Scripts> pip install -r ..\..\eflips\requirements.txt
 
+If you have not yet created the virtual environment, create it using:
 
 .. code-block:: none
 
     C:\Program Files\Python38> python -m venv "D:\GIT\test-project\venv"
+
+Use this procedure - including a submodule and symlinking to the desired package path - with any other package that you wish to contribute to. Calling GIT from the respective submodule folders pulls from and pushes to the correct repository, e.g., calling
+
+.. code-block:: none
+
+    D:\GIT\test-project-eflips-git> git pull
+
+will update ``eflips`` from its origin at ``https://github.com/mpm-tu-berlin/eflips``, no matter where your ``test-project`` is hosted.
