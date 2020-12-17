@@ -1,0 +1,8 @@
+pandas
+xlsxwriter
+requests
+numpy
+openpyxl
+simpy
+folium
+matplotlib

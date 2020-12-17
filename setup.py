@@ -30,6 +30,6 @@ setuptools.setup(
     ],
     python_requires='>=3.7',
     package_data={
-        'eflips': ['settings_default.json']
+        'eflips': ['settings_default.json', 'requirements.txt']
     }
 )
