@@ -18,6 +18,7 @@ eFLIPS documentation
    tco_calculation
    custom_simulation
    global_constants
+   developer_guide
 
 
 
