@@ -67,7 +67,7 @@ We have now have a top-level ``eflips`` folder that redirects to the actual fold
     D:\GIT\test-project> git commit -m "Added eflips submodule and symlink"
     D:\GIT\test-project> git push
 
-Symbolic links are committed to the GIT repository and - in theory - preserved when cloning the repository as shown above. In practice, Windows users will have to fix the symlinks afterwards (see :ref:`section below <cloning_repo_submodules>`).
+Symbolic links are committed to the GIT repository and - in theory - preserved when cloning the repository as shown above. In practice, Windows users will have to fix the symlinks after cloning (see :ref:`section below <cloning_repo_submodules>`).
 
 If you now create a project in your favourite IDE with ``test-project`` as the root folder, opening a console and typing
 
