@@ -3,8 +3,8 @@
 Developer's Guide
 =================
 
-Installing eFLIPS as a GIT submodule
-------------------------------------
+Configuring a new GIT repository with eFLIPS as a GIT submodule
+---------------------------------------------------------------
 
 If you are actively involved in eFLIPS development, you will most likely face the following usage scenario:
 
@@ -29,6 +29,8 @@ Now, create a GIT repository on your platform of choice. For this example, we cr
 .. code-block:: none
 
     D:\GIT> git clone --config core.symlinks=true <url_to_repository>
+
+If you have activated symlink support globally during GIT installation (it is disabled by default), you can omit the ``--config core.symlinks=true`` option.
 
 Add a ``.gitignore`` file to the newly created folder. :ref:`This modified GitHub template <gitignore_template>` works perfectly for us. Then, commit and push:
 
@@ -65,7 +67,7 @@ We have now have a top-level ``eflips`` folder that redirects to the actual fold
     D:\GIT\test-project> git commit -m "Added eflips submodule and symlink"
     D:\GIT\test-project> git push
 
-Symbolic links are committed to the GIT repository and preserved when cloning the repository *(provided the user enables symbolic links as shown above)*.
+Symbolic links are committed to the GIT repository and - in theory - preserved when cloning the repository as shown above. In practice, Windows users will have to fix the symlinks afterwards (see :ref:`section below <cloning_repo_submodules>`).
 
 If you now create a project in your favourite IDE with ``test-project`` as the root folder, opening a console and typing
 
@@ -89,6 +91,39 @@ Use this procedure - including a submodule and symlinking to the desired package
 
 .. code-block:: none
 
-    D:\GIT\test-project-eflips-git> git pull
+    D:\GIT\test-project\eflips-git> git pull
 
 will update ``eflips`` from its origin at ``https://github.com/mpm-tu-berlin/eflips``, no matter where your ``test-project`` is hosted.
+
+
+.. _cloning_repo_submodules:
+
+Cloning a GIT repository with submodules and symlinks
+-----------------------------------------------------
+
+Suppose you have created your repository as illustrated above and now wish to invite other team members. They must clone the repository using:
+
+.. code-block:: none
+
+    D:\GIT> git clone --recurse-submodules --remote-submodules --config core.symlinks=true <url_to_repository>
+
+Once again, if symlink support is enabled in GIT globally, ``--config core.symlinks=true`` can be omitted.
+
+This will clone the entire repository including all submodules and symlinks, but under Windows, there will most likely be a problem: Symlinks will be broken. To fix this, it is probably easiest to manually delete and re-create them:
+
+.. code-block:: none
+
+    D:\GIT\test-project> del eflips
+    D:\GIT\test-project> mklink /D eflips "eflips-git\eflips"
+
+**Stimmt das wirklich? Werden sie nicht immer wieder überschrieben nach dem Pullen? Prüfen!**
+
+
+Maintaning the documentation
+----------------------------
+
+**Under Construction**
+
+* How to install and use sphinx
+* How to publish documentation
+* Etc.
