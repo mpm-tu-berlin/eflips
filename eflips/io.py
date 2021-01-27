@@ -16,27 +16,8 @@ class FileExistsError(Exception):
 
 def export_pickle(file, obj, replace_file=True):
     """Save any object using pickle and compress with gzip."""
-    # if os.path.isfile(file):
-    #     if replace_file:
-    #         success = False
-    #         while not success:
-    #             try:
-    #                 os.remove(file)
-    #                 success = True
-    #             except (PermissionError, FileNotFoundError):
-    #                 sleep(1)
-    #     else:
-    #         logger = logging.getLogger('io_logger')
-    #         logger.error('File ' + file + ' already exists. Please '
-    #                                       'rename or call export_pickle with '
-    #                                       'replace_file=True.')
-    #         raise FileExistsError('File ' + file + ' already exists. Please '
-    #                               'rename or call export_pickle with '
-    #                               'replace_file=True.')
-
-    # Pickle obj and save as gzip compressed file
+    logger = logging.getLogger('io_logger')
     if not replace_file and os.path.isfile(file):
-        logger = logging.getLogger('io_logger')
         logger.error('File ' + file + ' already exists. Please '
                                       'rename or call export_pickle with '
                                       'replace_file=True.')
@@ -50,7 +31,9 @@ def export_pickle(file, obj, replace_file=True):
                 with gzip.open(file, mode='wb') as file:
                     file.write(pickle.dumps(obj))
                     success = True
-            except (PermissionError, FileNotFoundError):
+            except PermissionError:
+                logger.warning('PermissionError: Cannot write on %s; retrying'
+                               % file)
                 sleep(1)
 
 

@@ -19,6 +19,9 @@ timetable_filename = 'timetable.pickle'
 timetable_text_file_name = 'timetable.txt'
 plot_filename = 'timetable'
 
+if not os.path.exists(output_path):
+    os.mkdir(output_path)
+
 # -----------------------------------------------------------------------------
 # Create a grid
 # -----------------------------------------------------------------------------
