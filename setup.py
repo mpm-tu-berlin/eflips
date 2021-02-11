@@ -5,7 +5,7 @@ with open('README.md', 'r') as fh:
 
 setuptools.setup(
     name='eflips',
-    version='0.0.1',
+    version='0.0.2',
     author='D. Jefferies, P. Boev, E. Lauth',
     author_email='dominic.jefferies@tu-berlin.de',
     description='eFLIPS: Electric Fleet and Infrastructure Planning/Simulation',
