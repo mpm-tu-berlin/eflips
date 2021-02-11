@@ -2379,28 +2379,18 @@ class LongitudinalDynamicsTraction_ConstantEfficiency(TractionAbstract):
             self.odo += driving_profile.distance[i]/1000
 
 
-class Traction_Leg(TractionAbstract, metaclass=ABCMeta):
+class TractionLeg(TractionAbstract, metaclass=ABCMeta):
     """Abstract base class for traction models that operate based on
     schedule legs"""
     def drive(self, leg_node):
         if not isinstance(leg_node, LegNode):
             raise TypeError('Wrong type supplied for leg_node')
         for segment_node in leg_node.children:
-            if 'DELAYS' in global_constants and \
-                    global_constants['DELAYS'] == True:
-                # avoid negative durations:
-                duration = max(segment_node.duration + segment_node.delay,
-                               0)
-            else:
-                duration = segment_node.duration
-            distance_km = segment_node.grid_segment.distance
-            self.odo += distance_km
-            self.action = self.env.process(self._drive(distance_km,
-                                                       duration))
+            self.action = self.env.process(self._drive(segment_node))
             yield self.action
 
     @abstractmethod
-    def _drive(self, distance, duration):
+    def _drive(self, segment_node):
         pass
 
 
@@ -2435,14 +2425,24 @@ class Traction_Leg(TractionAbstract, metaclass=ABCMeta):
 #         pass
 
 
-class ConstantConsumptionTraction(Traction_Leg):
+class ConstantConsumptionTraction(TractionLeg):
     def __init__(self, env, medium, specific_consumption):
         super().__init__(env, medium)
         self.specific_consumption_input = specific_consumption
 
-    def _drive(self, distance, duration):
-        consumption = self.specific_consumption_input * distance
-        duration = max(duration, 0)
+    def _drive(self, segment_node):
+        if 'DELAYS' in global_constants and \
+                global_constants['DELAYS'] == True:
+            # avoid negative durations:
+            segment_duration_s = \
+                max(segment_node.duration + segment_node.delay, 0)
+        else:
+            segment_duration_s = segment_node.duration
+        segment_distance_km = segment_node.grid_segment.distance
+        self.odo += segment_distance_km
+
+        consumption = self.specific_consumption_input * segment_distance_km
+        duration = max(segment_duration_s, 0)
 
         self.port.flow = consumption.derivative(duration)
         logger = logging.getLogger('vehicle_logger')
@@ -2457,24 +2457,36 @@ class ConstantConsumptionTraction(Traction_Leg):
                       self.port.flow.energy_ref))
 
 
-class EfficiencyMapTraction_12m_bus(Traction_Leg):
+class EfficiencyMapTraction12mBus(TractionLeg):
     def __init__(self, env, medium):
         super().__init__(env, medium)
         self.correlation_map = io.import_pickle(
             '/Users/jonassm/tubCloud/Shared/Datenaustausch_eflips/Jonas/'
-            '05_MA_Tilman König, Traktionsmodell E-Bus/Simulationsmodell/Kennlinien/correlation_map_mass.dat')
+            '05_MA_Tilman König, Traktionsmodell E-Bus/Simulationsmodell/'
+            'Kennlinien/correlation_map_mass.dat')
 
-    def _drive(self, distance_km, duration_s):
-        if duration_s > 0:
-            v_avg_kmh = distance_km / duration_s * 3600
-            consumption = self.consumption_per_km(v_avg_kmh) * distance_km
+    def _drive(self, segment_node):
+        if 'DELAYS' in global_constants and \
+                global_constants['DELAYS'] == True:
+            # avoid negative durations:
+            segment_duration_s = \
+                max(segment_node.duration + segment_node.delay, 0)
+        else:
+            segment_duration_s = segment_node.duration
+        segment_distance_km = segment_node.grid_segment.distance
+        self.odo += segment_distance_km
 
-            self.port.flow = consumption.derivative(duration_s)
+        if segment_duration_s > 0:
+            v_avg_kmh = segment_distance_km / segment_duration_s * 3600
+            consumption = \
+                self.consumption_per_km(v_avg_kmh) * segment_distance_km
+
+            self.port.flow = consumption.derivative(segment_duration_s)
             logger = logging.getLogger('vehicle_logger')
             logger.debug('t = %d (%s): Traction power %.2f kW' %
                          (self.env.now, hms_str(self.env.now),
                           self.port.flow.energy_ref))
-            yield self.env.timeout(duration_s)
+            yield self.env.timeout(segment_duration_s)
             self.port.flow = EnergyFlow.from_energy_ref(self.port.medium, 0)
             logger.debug('t = %d (%s): Traction power %.2f kW' %
                          (self.env.now, hms_str(self.env.now),
@@ -2482,53 +2494,75 @@ class EfficiencyMapTraction_12m_bus(Traction_Leg):
 
     def consumption_per_km(self, v_avg_kmh):
         mass_min = 12650
-        mass_max = mass_min + 65 * global_constants['AVERAGE_PASSENGER_WEIGHT_KG']
+        mass_max = \
+            mass_min + 65 * global_constants['AVERAGE_PASSENGER_WEIGHT_KG']
         logger = logging.getLogger('vehicle_logger')
         if mass_min <= self.vehicle.total_mass <= mass_max:
             prev_params = self.correlation_map[mass_min]
             for mass, params in self.correlation_map.items():
                 if mass == self.vehicle.total_mass:
                     a, b, c = params
-                    energy_consumption_kwh_km = (a * np.log(v_avg_kmh) + b) * (1 + c / v_avg_kmh)
+                    energy_consumption_kwh_km = \
+                        (a * np.log(v_avg_kmh) + b) * (1 + c / v_avg_kmh)
                 elif mass > self.vehicle.total_mass:
                     a, b, c = params
-                    energy_consumption_kwh_km_ceil = (a * np.log(v_avg_kmh) + b) * (1 + c / v_avg_kmh)
+                    energy_consumption_kwh_km_ceil = \
+                        (a * np.log(v_avg_kmh) + b) * (1 + c / v_avg_kmh)
                     a, b, c = prev_params
-                    energy_consumption_kwh_km_floor = (a * np.log(v_avg_kmh) + b) * (1 + c / v_avg_kmh)
-                    energy_consumption_kwh_km = (energy_consumption_kwh_km_ceil - energy_consumption_kwh_km_floor) / 2
+                    energy_consumption_kwh_km_floor = \
+                        (a * np.log(v_avg_kmh) + b) * (1 + c / v_avg_kmh)
+                    energy_consumption_kwh_km = \
+                        (energy_consumption_kwh_km_ceil
+                         + energy_consumption_kwh_km_floor) / 2
                 prev_params = params
         elif self.vehicle.total_mass > mass_max:
-            logger.debug('%d > %d. considering mass of %d to calculate traction consumption'
+            logger.debug('%d > %d. considering mass of %d to calculate '
+                         'traction consumption'
                          % (self.vehicle.total_mass, mass_max, mass_max))
             a, b, c = self.correlation_map[mass_max]
-            energy_consumption_kwh_km = (a * np.log(v_avg_kmh) + b) * (1 + c / v_avg_kmh)
+            energy_consumption_kwh_km = \
+                (a * np.log(v_avg_kmh) + b) * (1 + c / v_avg_kmh)
         else:
-            logger.debug('%d < %d. considering mass of %d to calculate traction consumption'
+            logger.debug('%d < %d. considering mass of %d to calculate '
+                         'traction consumption'
                          % (self.vehicle.total_mass, mass_min, mass_min))
             a, b, c = self.correlation_map[mass_min]
-            energy_consumption_kwh_km = (a * np.log(v_avg_kmh) + b) * (1 + c / v_avg_kmh)
+            energy_consumption_kwh_km = \
+                (a * np.log(v_avg_kmh) + b) * (1 + c / v_avg_kmh)
 
         return Energy.from_energy(Fuels.electricity, energy_consumption_kwh_km)
 
 
-class EfficiencyMapTraction_18m_bus(Traction_Leg):
+class EfficiencyMapTraction18mBus(TractionLeg):
     def __init__(self, env, medium):
         super().__init__(env, medium)
         self.correlation_map = io.import_pickle(
             '/Users/jonassm/tubCloud/Shared/Datenaustausch_eflips/Jonas/'
-            '05_MA_Tilman König, Traktionsmodell E-Bus/Simulationsmodell/Kennlinien/correlation_map_mass.dat')
+            '05_MA_Tilman König, Traktionsmodell E-Bus/Simulationsmodell/'
+            'Kennlinien/correlation_map_mass.dat')
 
-    def _drive(self, distance_km, duration_s):
-        if duration_s > 0:
-            v_avg_kmh = distance_km / duration_s * 3600
-            consumption = self.consumption_per_km(v_avg_kmh) * distance_km
+    def _drive(self, segment_node):
+        if 'DELAYS' in global_constants and \
+                global_constants['DELAYS'] == True:
+            # avoid negative durations:
+            segment_duration_s = \
+                max(segment_node.duration + segment_node.delay, 0)
+        else:
+            segment_duration_s = segment_node.duration
+        segment_distance_km = segment_node.grid_segment.distance
+        self.odo += segment_distance_km
 
-            self.port.flow = consumption.derivative(duration_s)
+        if segment_duration_s > 0:
+            v_avg_kmh = segment_distance_km / segment_duration_s * 3600
+            consumption = \
+                self.consumption_per_km(v_avg_kmh) * segment_distance_km
+
+            self.port.flow = consumption.derivative(segment_duration_s)
             logger = logging.getLogger('vehicle_logger')
             logger.debug('t = %d (%s): Traction power %.2f kW' %
                          (self.env.now, hms_str(self.env.now),
                           self.port.flow.energy_ref))
-            yield self.env.timeout(duration_s)
+            yield self.env.timeout(segment_duration_s)
             self.port.flow = EnergyFlow.from_energy_ref(self.port.medium, 0)
             logger.debug('t = %d (%s): Traction power %.2f kW' %
                          (self.env.now, hms_str(self.env.now),
@@ -2537,31 +2571,43 @@ class EfficiencyMapTraction_18m_bus(Traction_Leg):
     def consumption_per_km(self, v_avg_kmh):
         mass_ref = self.vehicle.total_mass / 1.5
         mass_min = 12650
-        mass_max = mass_min + 65*global_constants['AVERAGE_PASSENGER_WEIGHT_KG']
+        mass_max = \
+            mass_min + 65*global_constants['AVERAGE_PASSENGER_WEIGHT_KG']
         logger = logging.getLogger('vehicle_logger')
         if mass_min <= mass_ref <= mass_max:
             prev_params = self.correlation_map[mass_min]
             for mass, params in self.correlation_map.items():
                 if mass > mass_ref:
                     a, b, c = params
-                    energy_consumption_kwh_km_ceil = (a * np.log(v_avg_kmh) + b) * (1 + c / v_avg_kmh)
+                    energy_consumption_kwh_km_ceil = \
+                        (a * np.log(v_avg_kmh) + b) * (1 + c / v_avg_kmh)
                     a, b, c = prev_params
-                    energy_consumption_kwh_km_floor = (a * np.log(v_avg_kmh) + b) * (1 + c / v_avg_kmh)
-                    energy_consumption_kwh_km = (energy_consumption_kwh_km_ceil + energy_consumption_kwh_km_floor)/2
+                    energy_consumption_kwh_km_floor = \
+                        (a * np.log(v_avg_kmh) + b) * (1 + c / v_avg_kmh)
+                    energy_consumption_kwh_km = \
+                        (energy_consumption_kwh_km_ceil
+                         + energy_consumption_kwh_km_floor)/2
                     break
                 prev_params = params
         elif mass_ref > mass_max:
-            logger.debug('%d > %d. considering mass of %d to calculate traction consumption'
-                         % (self.vehicle.total_mass, mass_max * 1.5, mass_max * 1.5))
+            logger.debug('%d > %d. considering mass of %d to calculate '
+                         'traction consumption'
+                         % (self.vehicle.total_mass, mass_max * 1.5,
+                            mass_max * 1.5))
             a, b, c = self.correlation_map[mass_max]
-            energy_consumption_kwh_km = (a * np.log(v_avg_kmh) + b) * (1 + c / v_avg_kmh)
+            energy_consumption_kwh_km = \
+                (a * np.log(v_avg_kmh) + b) * (1 + c / v_avg_kmh)
         else:
-            logger.debug('%d < %d. considering mass of %d to calculate traction consumption'
-                         % (self.vehicle.total_mass, mass_min * 1.5, mass_min * 1.5))
+            logger.debug('%d < %d. considering mass of %d to calculate '
+                         'traction consumption'
+                         % (self.vehicle.total_mass, mass_min * 1.5,
+                            mass_min * 1.5))
             a, b, c = self.correlation_map[mass_min]
-            energy_consumption_kwh_km = (a * np.log(v_avg_kmh) + b) * (1 + c / v_avg_kmh)
+            energy_consumption_kwh_km = \
+                (a * np.log(v_avg_kmh) + b) * (1 + c / v_avg_kmh)
 
-        return Energy.from_energy(Fuels.electricity, energy_consumption_kwh_km*1.5)
+        return Energy.from_energy(Fuels.electricity,
+                                  energy_consumption_kwh_km*1.5)
 
 
 class Fleet:
@@ -2605,7 +2651,6 @@ class Fleet:
             else:
                 mileage[vtype] += vehicle.odo
         return mileage
-
 
     def create_vehicle(self, vehicle_type_string, ID=None):
         """Wrapper function to create new Vehicle objects using flat parameter
@@ -2651,11 +2696,11 @@ class Fleet:
                     Fuels.electricity,
                     Energy.from_energy(Fuels.electricity,
                                        params['traction_consumption']))
-            elif params['traction_model'].lower() == 'efficiencymaptraction_18m_bus':
-                traction = EfficiencyMapTraction_18m_bus(self.env,
+            elif params['traction_model'].lower() == 'EfficiencyMapTraction18mBus':
+                traction = EfficiencyMapTraction18mBus(self.env,
                                                          Fuels.electricity)
-            elif params['traction_model'].lower() == 'efficiencymaptraction_12m_bus':
-                traction = EfficiencyMapTraction_12m_bus(self.env,
+            elif params['traction_model'].lower() == 'EfficiencyMapTraction12mBus':
+                traction = EfficiencyMapTraction12mBus(self.env,
                                                          Fuels.electricity)
             elif params['traction_model'].lower() == 'longitudinaldynamicstraction_constantefficiency':
                 traction = LongitudinalDynamicsTraction_ConstantEfficiency(
@@ -2959,11 +3004,11 @@ class Fleet:
                     Fuels.electricity,
                     Energy.from_energy(Fuels.electricity,
                                        params['traction_consumption']))
-            elif params['traction_model'].lower() == 'efficiencymaptraction_18m_bus':
-                traction = EfficiencyMapTraction_18m_bus(self.env,
+            elif params['traction_model'].lower() == 'EfficiencyMapTraction18mBus':
+                traction = EfficiencyMapTraction18mBus(self.env,
                                                          Fuels.electricity)
-            elif params['traction_model'].lower() == 'efficiencymaptraction_12m_bus':
-                traction = EfficiencyMapTraction_12m_bus(self.env,
+            elif params['traction_model'].lower() == 'EfficiencyMapTraction12mBus':
+                traction = EfficiencyMapTraction12mBus(self.env,
                                                          Fuels.electricity)
             else:
                 ValueError('Traction model ' + params['traction_model'] + ' not supported')
@@ -3004,11 +3049,11 @@ class Fleet:
                     Fuels.electricity,
                     Energy.from_energy(Fuels.electricity,
                                        params['traction_consumption']))
-            elif params['traction_model'].lower() == 'efficiencymaptraction_18m_bus':
-                traction = EfficiencyMapTraction_18m_bus(self.env,
+            elif params['traction_model'].lower() == 'EfficiencyMapTraction18mBus':
+                traction = EfficiencyMapTraction18mBus(self.env,
                                                          Fuels.electricity)
-            elif params['traction_model'].lower() == 'efficiencymaptraction_12m_bus':
-                traction = EfficiencyMapTraction_12m_bus(self.env,
+            elif params['traction_model'].lower() == 'EfficiencyMapTraction12mBus':
+                traction = EfficiencyMapTraction12mBus(self.env,
                                                          Fuels.electricity)
             else:
                 ValueError('Traction model ' + params['traction_model'] + ' not supported')
@@ -3148,11 +3193,11 @@ class Fleet:
                     Fuels.electricity,
                     Energy.from_energy(Fuels.electricity,
                                        params['traction_consumption']))
-            elif params['traction_model'].lower() == 'efficiencymaptraction_18m_bus':
-                traction = EfficiencyMapTraction_18m_bus(self.env,
+            elif params['traction_model'].lower() == 'EfficiencyMapTraction18mBus':
+                traction = EfficiencyMapTraction18mBus(self.env,
                                                          Fuels.electricity)
-            elif params['traction_model'].lower() == 'efficiencymaptraction_12m_bus':
-                traction = EfficiencyMapTraction_12m_bus(self.env,
+            elif params['traction_model'].lower() == 'EfficiencyMapTraction12mBus':
+                traction = EfficiencyMapTraction12mBus(self.env,
                                                          Fuels.electricity)
             else:
                 ValueError('Traction model ' + params['traction_model'] + ' not supported')
@@ -3279,11 +3324,11 @@ class Fleet:
                     Fuels.electricity,
                     Energy.from_energy(Fuels.electricity,
                                        params['traction_consumption']))
-            elif params['traction_model'].lower() == 'efficiencymaptraction_18m_bus':
-                traction = EfficiencyMapTraction_18m_bus(self.env,
+            elif params['traction_model'].lower() == 'EfficiencyMapTraction18mBus':
+                traction = EfficiencyMapTraction18mBus(self.env,
                                                          Fuels.electricity)
-            elif params['traction_model'].lower() == 'efficiencymaptraction_12m_bus':
-                traction = EfficiencyMapTraction_12m_bus(self.env,
+            elif params['traction_model'].lower() == 'EfficiencyMapTraction12mBus':
+                traction = EfficiencyMapTraction12mBus(self.env,
                                                          Fuels.electricity)
             else:
                 ValueError('Traction model ' + params['traction_model'] + ' not supported')

@@ -15,8 +15,8 @@ import eflips.events
 from eflips.energy import Fuels, Energy, EnergyFlow, Battery, \
     ChargingInterface, ChargingInterfaceTypes
 from eflips.grid import Grid, GridPoint, GridSegment
-from eflips.vehicle import VehicleType, ConstantPowerDevice, ConstantConsumptionTraction, \
-    SimpleVehicle, Fleet
+from eflips.vehicle import VehicleType, ConstantPowerDevice, \
+    ConstantConsumptionTraction, SimpleVehicle, Fleet
 from eflips.schedule import list_segments, Driver, Schedule, ScheduleNode, \
     TripNode, LegNode, SegmentNode, ChargingSchedule, ScheduleContainer, \
     TimeTable, DrivingProfile
