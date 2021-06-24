@@ -796,22 +796,14 @@ class TCO:
         if 'colors' in kwargs.keys():
             colors = kwargs['colors']
         else:
-            colormap = plt.get_cmap('tab20c')
-            colors = {'Fahrzeug': colormap(5),  # orange
-                      'Batterie': colormap(9),  # green
-                      'PowerPack': colormap(9),  # green
-                      'Energieinfrastruktur': colormap(1),  # blue
-                      'Infrastruktur': colormap(1),  # blue
-                      'Fahrzeug_Instandhaltung': colormap(7),  # light orange
-                      # light blue
-                      'Energieinfrastruktur_Instandhaltung': colormap(3),
-                      'Energie': colormap(17)}  # grey
+            colormap = plt.get_cmap('Set3')
+            colors = colormap.colors
         (self._df_npv.cumsum() / 1000000).plot.bar(stacked=True, ax=ax1,
                                                    xlim=xlim,
-                                                   color=
-                                                   map(colors.get,
-                                                       self.df_NPV.columns)
+                                                   color=colors
                                                    )
+        ax1.legend(loc='upper right',
+                   fancybox=True, fontsize=8)
         plt.tight_layout()
         plt.show()
         if saveplot:
@@ -828,23 +820,16 @@ class TCO:
         if 'colors' in kwargs.keys():
             colors = kwargs['colors']
         else:
-            colormap = plt.get_cmap('tab20c')
-            colors = {'Fahrzeug': colormap(5),  # orange
-                      'Batterie': colormap(9),  # green
-                      'PowerPack': colormap(9),  # green
-                      'Energieinfrastruktur': colormap(1),  # blue
-                      'Infrastruktur': colormap(1),  # blue
-                      'Fahrzeug_Instandhaltung': colormap(7),  # light orange
-                      # light blue
-                      'Energieinfrastruktur_Instandhaltung': colormap(3),
-                      'Energie': colormap(17)}  # grey
+            colormap = plt.get_cmap('Set3')
+            colors = colormap.colors
         (self._df_npv / 1000000).plot(kind='bar', stacked=True, ax=ax1,
                                       legend=False, xlim=xlim,
-                                      color=map(colors.get,
-                                                self.df_NPV.columns)
+                                      color=colors
                                       )
         # ax1.set(ylim=[-4, 10])
         # fig.set_size_inches((8, 4), forward=True)
+        ax1.legend(loc='upper right',
+                   fancybox=True, fontsize=8)
         plt.tight_layout()
         plt.show()
         if saveplot:
@@ -862,22 +847,14 @@ class TCO:
         if 'colors' in kwargs.keys():
             colors = kwargs['colors']
         else:
-            colormap = plt.get_cmap('tab20c')
-            colors = {'Fahrzeug': colormap(5),  # orange
-                      'Batterie': colormap(9),  # green
-                      'PowerPack': colormap(9),  # green
-                      'Energieinfrastruktur': colormap(1),  # blue
-                      'Infrastruktur': colormap(1),  # blue
-                      'Fahrzeug_Instandhaltung': colormap(7),  # light orange
-                      # light blue
-                      'Energieinfrastruktur_Instandhaltung': colormap(3),
-                      'Energie': colormap(17)}  # grey
+            colormap = plt.get_cmap('Set3')
+            colors = colormap.colors
         (self._df_npv.cumsum() / 1000000).plot.area(ax=ax1, stacked=True,
                                                     xlim=xlim,
-                                                    color=
-                                                    map(colors.get,
-                                                        self.df_NPV.columns)
+                                                    color=colors
                                                     )
+        ax1.legend(loc='upper right',
+                   fancybox=True, fontsize=8)
         plt.tight_layout()
         plt.show()
         if saveplot:
@@ -980,123 +957,3 @@ class TCO:
         plt.tight_layout()
         if saveplot:
             plt.savefig(filename + '.png', dpi=200)
-
-
-def plot_mutiple_tco(list_with_tcos, list_with_names, plot_summary=False,
-                     plot_percentage=False, saveplot=False,
-                     filename='sum_separated', annotate=False, grid_on=False,
-                     plot_component_percentage=False,
-                     fileformat=".png", **kwargs):
-    """list_with_tcos is a list with TCO objects;
-        the names are user for the xticks
-        plot_percentage takes the sum of the first tco object and set is
-        as baseline (100%)
-        kwargs:
-            colors: dict with components as keys and colors as value
-        """
-    fig, ax1 = plt.subplots()
-    if grid_on:
-        ax1.yaxis.grid(linewidth=.5, color="grey", linestyle="--")
-    if plot_percentage:
-        ax1.set_ylabel(ylabel='%', fontsize=10)
-    else:
-        ax1.set_ylabel(ylabel='Mio. €', fontsize=10)
-    if 'colors' in kwargs.keys():
-        colors = kwargs['colors']
-    else:
-        colormap = plt.get_cmap('tab20c')
-        colors = {'Fahrzeug': colormap(5),  # orange
-                  'Batterie': colormap(9),  # green
-                  'PowerPack': colormap(9),  # green
-                  'Energieinfrastruktur': colormap(1),  # blue
-                  'Infrastruktur': colormap(1),  # blue
-                  'Fahrzeug_Instandhaltung': colormap(7),  # light orange
-                  # light blue
-                  'Energieinfrastruktur_Instandhaltung': colormap(3),
-                  'Energie': colormap(17)}  # grey
-    xvalues = []
-    xticks = []
-    idx = 0
-    if plot_percentage:
-        base_value = list_with_tcos[0].npv_total
-    for tco, name in zip(list_with_tcos, list_with_names):
-        bottom = 0
-        xvalues.append(idx)
-        xticks.append(name)
-        if plot_summary:
-            if hasattr(tco, '_sum_cashflows_NPV_overview'):
-                for costType, value in tco.sum_cash_flows_npv_overview.items():
-                    if plot_percentage:
-                        val = value / base_value * 100
-                    else:
-                        val = value / 1000000
-                    plt.bar(idx, val, width=0.8, bottom=bottom,
-                            color=colors[costType],
-                            label=costType.replace('_', ': '))
-                    if plot_component_percentage:
-                        component_percentage = \
-                            round(value / tco.npv_total * 100)
-                        ax1.annotate(str(component_percentage) + " %",
-                                     (idx, bottom + val / 2),
-                                     xytext=(0, 0),
-                                     textcoords='offset pixels',
-                                     fontsize=6,
-                                     color="white",
-                                     horizontalalignment='center',
-                                     verticalalignment='center')
-                    bottom += val
-        else:  # plot all components
-            for costType in tco.sum_cash_flows_npv.keys():
-                for component, value in tco.sum_cash_flows_npv[costType].items():
-                    if plot_percentage:
-                        val = value / base_value * 100
-                    else:
-                        val = value / 1000000
-                    plt.bar(idx, val, width=0.8, bottom=bottom,
-                            color=colors[component],
-                            label=component.replace('_', ': '))
-                    if plot_component_percentage:
-                        component_percentage = value / tco.npv_total * 100
-                        ax1.annotate("{:0.1f}".format(component_percentage) + " %",
-                                     (idx, bottom + val / 2),
-                                     xytext=(0, 0),
-                                     textcoords='offset pixels',
-                                     fontsize=6,
-                                     color="white",
-                                     horizontalalignment='center',
-                                     verticalalignment='center')
-                    bottom += val
-        if annotate:
-            str_attr = "%" if plot_percentage else ""
-            ax1.annotate("{:0.1f}".format(bottom) + str_attr,
-                         (idx, bottom),
-                         xytext=(0, 5),
-                         textcoords='offset pixels',
-                         fontsize=8,
-                         horizontalalignment='center',
-                         verticalalignment='bottom'
-                         )
-        idx += 1
-
-    plt.xticks(xvalues, xticks)
-    plt.tick_params(
-        axis='x',
-        which='both',
-        labelsize=8)
-    ax1.set(xlim=[-1, len(list_with_tcos)])
-
-    handles, labels = ax1.get_legend_handles_labels()
-    handle_list, label_list = [], []
-    for handle, label in zip(handles, labels):
-        if label not in label_list:
-            handle_list.append(handle)
-            label_list.append(label)
-    # ax1.legend(handle_list[::-1], label_list[::-1],
-    #            bbox_to_anchor=(0, -0.25, 1, 0.2), mode="expand",
-    #            borderaxespad=0., fancybox=True, fontsize=7, ncol=3)
-    ax1.legend(handle_list, label_list, bbox_to_anchor=(0, -0.30, 1, 0.2),
-               mode="expand", borderaxespad=0.,
-               fancybox=True, fontsize=7, ncol=3)
-    plt.show()
-    if saveplot:
-        plt.savefig(filename + fileformat, dpi=200, bbox_inches='tight')
