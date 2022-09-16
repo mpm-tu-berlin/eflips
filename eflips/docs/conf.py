@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.abspath('../../'))
 # -- Project information -----------------------------------------------------
 
 project = 'eFLIPS'
-copyright = '2020, Dominic Jefferies, Pavel Boev, Enrico Lauth'
+copyright = '2022, Dominic Jefferies, Pavel Boev, Enrico Lauth'
 author = 'Dominic Jefferies, Pavel Boev, Enrico Lauth'
 
 # The full version, including alpha/beta/rc tags

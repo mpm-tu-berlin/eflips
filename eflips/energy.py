@@ -774,7 +774,7 @@ class ChargeController:
 class EnergyStorage:
     def __init__(self, env, medium, energy_nominal, energy_init,
                  flow_limit_lower, flow_limit_upper, discharge_efficiency=1,
-                 charge_efficiency=1):
+                 charge_efficiency=1, ID=None):
         self.env = env
         self.medium = medium  # EnergyMedium
         self.energy_nominal = energy_nominal  # Energy
@@ -794,6 +794,7 @@ class EnergyStorage:
         self.soc_was_valid = self.soc_valid
         self.soc_was_critical = self.soc_critical
         self._calc_flow()
+        self._ID = ID
 
     @property
     def energy_max(self):
@@ -841,6 +842,10 @@ class EnergyStorage:
         # This method is expected to be overridden by subclasses that actually
         # define a critical charging state
         return not self.soc_valid
+
+    @property
+    def id(self):
+        return self._ID
 
     def _calc_flow(self):
         """refresh energy flow (< 0: consumption, > 0: charging) and adjust
@@ -1026,7 +1031,7 @@ class EnergyStorage:
 class Battery(EnergyStorage):
     def __init__(self, env, energy_nominal, soc_reserve, soc_min,
                  soc_max, soc_init, soh, discharge_rate, charge_rate,
-                 discharge_efficiency=1, charge_efficiency=1):
+                 discharge_efficiency=1, charge_efficiency=1, ID=None):
         medium = Fuels.electricity
         self.soc_reserve = soc_reserve  # 0...1, expected to be > soc_min
         self.soc_min = soc_min  # 0...1
@@ -1043,7 +1048,7 @@ class Battery(EnergyStorage):
         energy_init = soc_init * energy_nominal * soh
         super().__init__(env, medium, energy_nominal, energy_init,
                          flow_limit_lower, flow_limit_upper,
-                         discharge_efficiency, charge_efficiency)
+                         discharge_efficiency, charge_efficiency, ID)
 
     @property
     def soc(self):

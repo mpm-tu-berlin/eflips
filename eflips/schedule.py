@@ -1510,8 +1510,10 @@ class Driver:
             self.trips_data[trip_id] = trip_data
 
         # Switch off
-        # clean events queue before switching off vehicle
-        # clear_queue(self.env)
+        # clear battery events queue before switching off vehicle
+        if global_constants["INTERRUPT_VEHICLE_BATTERY_EVENTS_AFTER_SCHEDULE_END"]:
+            battery_id = self.vehicle.energy_storage_primary.ID
+            self.env._queue = [x for x in self.env._queue if x[3].value != battery_id]
         self.vehicle.ignition_on = False
         self.vehicle.ac_request = False
         Dt = self.env.now - t0

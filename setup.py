@@ -5,9 +5,9 @@ with open('README.md', 'r') as fh:
 
 setuptools.setup(
     name='eflips',
-    version='0.0.3',
+    version='0.0.4',
     author='D. Jefferies, P. Boev, E. Lauth',
-    author_email='dominic.jefferies@tu-berlin.de',
+    author_email='dominic.jefferies@tu-berlin.de, pavel.boev@tu-berlin.de, enrico.lauth@tu-berlin.de',
     description='eFLIPS: Electric Fleet and Infrastructure Planning/Simulation',
     long_description=long_description,
     long_description_content_type='text/markdown',
@@ -19,14 +19,14 @@ setuptools.setup(
         'Operating System :: OS Independent',
     ],
     install_requires=[
-        'pandas',
-        'xlsxwriter',
+        'pandas<=1.2.5',
+        'xlsxwriter<=1.4.3',
         'requests',
         'numpy',
         'openpyxl',
-        'simpy',
+        'simpy<4',
         'folium',
-        'matplotlib'
+        'matplotlib<=3.4.2'
     ],
     python_requires='>=3.7',
     package_data={
