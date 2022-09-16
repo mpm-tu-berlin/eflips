@@ -53,7 +53,7 @@ Now, include ``eflips`` as a GIT submodule in your own repository, **but be sure
 
     D:\GIT\test-project> git submodule add https://github.com/mpm-tu-berlin/eflips.git eflips-git
 
-You may notice the actual ``eflips`` Python package is now found in the ``test-project/eflips-git/eflips`` folder. However, we want it to appear on the top level, otherwise it won't be within the module search path (unless we fiddle around with ``sys.path.append()`` at the top of every script - no thanks...). This is where symbolic links come into play. Create a **relative** symlink using:
+You may notice the actual ``eflips`` Python package is now found in the ``test-project/eflips-git/eflips`` folder. However, we want it to appear on the top level, otherwise it won't be within the module search path (unless we fiddle around with ``sys.path.append()`` at the top of every script - no thanks...). This is where symbolic links come into play. Create a **relative** symlink using (for PowerShell use ``cmd /c mklink``):
 
 .. code-block:: none
 

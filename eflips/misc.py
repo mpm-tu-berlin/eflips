@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 from itertools import tee
 from collections import deque
-from collections import Counter, Mapping
+from collections import Counter
+from collections.abc import Mapping
 from abc import ABCMeta
 from collections.abc import Iterable
 import os
