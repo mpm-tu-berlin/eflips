@@ -28,5 +28,6 @@
         "specific_consumption_per_vehicle": "Specific consumption per vehicle"
       }
     }
-  }
+  },
+  "OSM_KEY": ""
 }

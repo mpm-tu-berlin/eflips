@@ -2,14 +2,15 @@ import requests
 import json
 import logging
 import time
-import numpy as np
 from eflips import misc
 from eflips import io
 from math import ceil
+from eflips.settings import global_constants
 
 
 class MapRequestError(Exception):
     pass
+
 
 def get_distance_between_gridpoints(origin, destination, cachedata,
                                     get_missing_coords_from_osm=True):
@@ -105,6 +106,7 @@ def get_distance_between_all_gridpoints(list_of_gridpoints, cachedata,
                     destination_coords = list_of_coords[destination_indices[l]]
                     distance_dict.update({(origin_coords, destination_coords): distance})
             cachedata['openroute_distance'].update(distance_dict)
+
 
 def get_coords(grid_point, cachedata):
     """Get coordinates for a GridPoint from its osm_req_str or name
@@ -218,6 +220,7 @@ def find_places_in_osm(req_str):
         place['lon'] = float(place['lon'])
     return places
 
+
 def address_to_osm_request(grid_point_name):
     point_address = grid_point_name
 
@@ -226,6 +229,7 @@ def address_to_osm_request(grid_point_name):
     point_address += " Berlin"
 
     return point_address
+
 
 def get_distance_between_coords(coords_origin, coords_destination,
                                 cachedata):
@@ -266,14 +270,12 @@ def get_distance_from_openrouteservice(coords_origin, coords_destination):
 
     url = "https://api.openrouteservice.org/v2/matrix/driving-car"
 
-    # key created by JSM on 2019-10-16:
-    # key = "5b3ce3597851110001cf6248fbbf563e796144b8b722c830c340ef93"
+    # get key your settings_file
+    if global_constants["OSM_KEY"]:
+        key = global_constants["OSM_KEY"]
+    else:
+        KeyError("OSM Key is missing. Provide key in your settings file.")
 
-    # key created by DJ on 2019-10-16 (user: djefferies):
-    key = "5b3ce3597851110001cf6248a4dfa5c9345546b886fa4cb2dfc0f255"
-
-    # DJs backup key (2019-08-14) (user: spoonybard)
-    # key = "5b3ce3597851110001cf62483989fee9403d4d0982d7cc2bac26ab8e"
     headers = {'content-type': 'application/json',
                'Authorization': key}
 
@@ -308,6 +310,7 @@ def get_distance_from_openrouteservice(coords_origin, coords_destination):
     distance_return = result['distances'][1][0]
     return (distance_outbound, distance_return)
 
+
 def get_distance_matrix_from_openrouteservice(list_of_coords,
                                               origin_indices='all',
                                               destination_indices='all'):
@@ -315,14 +318,12 @@ def get_distance_matrix_from_openrouteservice(list_of_coords,
 
     url = "https://api.openrouteservice.org/v2/matrix/driving-car"
 
-    # key created by JSM on 2019-10-16:
-    # key = "5b3ce3597851110001cf6248fbbf563e796144b8b722c830c340ef93"
+    # get key your settings_file
+    if global_constants["OSM_KEY"]:
+        key = global_constants["OSM_KEY"]
+    else:
+        KeyError("OSM Key is missing. Provide key in your settings file.")
 
-    # key created by DJ on 2019-10-16 (user: djefferies):
-    key = "5b3ce3597851110001cf6248a4dfa5c9345546b886fa4cb2dfc0f255"
-
-    # DJs backup key (2019-08-14) (user: spoonybard)
-    # key = "5b3ce3597851110001cf62483989fee9403d4d0982d7cc2bac26ab8e"
     headers = {'content-type': 'application/json',
                'Authorization': key}
 
@@ -359,6 +360,7 @@ def get_distance_matrix_from_openrouteservice(list_of_coords,
     result = request.json()
     return result['distances']
 
+
 def load_cache(cache_file_path):
     logger = logging.getLogger('map_request_logger')
     try:
@@ -370,6 +372,7 @@ def load_cache(cache_file_path):
                      'openroute_distance': {}}
         io.export_pickle(cache_file_path, cachedata)
     return cachedata
+
 
 def merge_osm_cache_files(input_file_list, output_file, replace_file=True):
     fields = ['osm_places', 'openroute_distance']
