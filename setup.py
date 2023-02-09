@@ -19,14 +19,14 @@ setuptools.setup(
         'Operating System :: OS Independent',
     ],
     install_requires=[
-        'pandas<=1.2.5',
-        'xlsxwriter<=1.4.3',
+        'pandas',
+        'xlsxwriter',
         'requests',
         'numpy',
         'openpyxl',
-        'simpy<4',
+        'simpy',
         'folium',
-        'matplotlib<=3.4.2'
+        'matplotlib'
     ],
     python_requires='>=3.7',
     package_data={
