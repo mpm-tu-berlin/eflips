@@ -3,6 +3,7 @@ from eflips.misc import TimeInfo
 import pandas as pd
 import numpy as np
 import math
+import os
 from matplotlib import pyplot as plt
 
 def temperature_histogram(trydata, use_day_map='default',
@@ -374,7 +375,7 @@ class TCO:
         self._base_year = base_year if base_year else start_year
         if 'overview_dict' in kwargs:
             self._overview_dict = kwargs['overview_dict']
-            self._sum_cashflows_npv_overview = {}
+            self._sum_cash_flows_npv_overview = {}
         self._calculate()
 
     @staticmethod
@@ -593,13 +594,13 @@ class TCO:
 
         if hasattr(self, '_overview_dict'):
             for costType_new, items in self._overview_dict.items():
-                self._sum_cashflows_npv_overview.update({costType_new: 0})
+                self._sum_cash_flows_npv_overview.update({costType_new: 0})
                 for item in items:  # component in _sumCashFlows_NPV
                     for cost_type in self._sum_cash_flows_npv.keys():
                         for component, cash_flow in \
                                 self._sum_cash_flows_npv[cost_type].items():
                             if component == item:
-                                self._sum_cashflows_npv_overview[costType_new]\
+                                self._sum_cash_flows_npv_overview[costType_new]\
                                     += cash_flow
 
         # Determine total project NPV
@@ -735,8 +736,8 @@ class TCO:
 
     @property
     def sum_cash_flows_npv_overview(self):
-        if hasattr(self, "_sum_cashflows_NPV_overview"):
-            return self._sum_cashflows_npv_overview
+        if hasattr(self, "_sum_cash_flows_npv_overview"):
+            return self._sum_cash_flows_npv_overview
 
     @property
     def npv_total(self):
@@ -809,9 +810,9 @@ class TCO:
         if saveplot:
             plt.savefig(filename + '.png', dpi=200)
 
-    def plot_stacked_bar_over_period(self, saveplot=False,
+    def plot_stacked_bar_over_period(self, save_plot=False,
                                      xlimit=None,
-                                     filename='stacked_bar_over_period',
+                                     file_format=".png",
                                      **kwargs):
         fig, ax1 = plt.subplots()
         ax1.set_xlabel(xlabel='Jahr', fontsize=10)
@@ -832,13 +833,25 @@ class TCO:
                    fancybox=True, fontsize=8)
         plt.tight_layout()
         plt.show()
-        if saveplot:
-            plt.savefig(filename + '.png', dpi=200)
 
-    def plot_stacked_line_over_period_cumulated(self, saveplot=False,
-                                                xlimit=None,
-                                                filename='stacked_line_over_'
-                                                         'period_cumulated',
+        if save_plot:
+            f_name_no_format = kwargs['file_name'] if 'file_name' in kwargs.keys() \
+                else 'stacked_bar_over_period'
+            f_name = f_name_no_format + file_format
+            if 'file_path' in kwargs.keys():
+                path = kwargs['file_path']
+                plt.savefig(os.path.join(path, f_name), dpi=300)
+                print("Plot '%s' saved in %s" % (f_name, path))
+            else:
+                plt.savefig(f_name, dpi=300)
+                print("Plot %s saved." % f_name)
+        if 'show_plot' in kwargs.keys():
+            plt.show() if kwargs['show_plot'] is True else plt.close()
+        else:
+            plt.close()
+
+    def plot_stacked_line_over_period_cumulated(self, save_plot=False,
+                                                xlimit=None, file_format=".png",
                                                 **kwargs):
         fig, ax1 = plt.subplots()
         ax1.set_xlabel(xlabel='Jahr', fontsize=10)
@@ -857,8 +870,21 @@ class TCO:
                    fancybox=True, fontsize=8)
         plt.tight_layout()
         plt.show()
-        if saveplot:
-            plt.savefig(filename + '.png', dpi=200)
+        if save_plot:
+            f_name_no_format = kwargs['file_name'] if 'file_name' in kwargs.keys() \
+                else 'stacked_line_over_period_cumulated',
+            f_name = f_name_no_format + file_format
+            if 'file_path' in kwargs.keys():
+                path = kwargs['file_path']
+                plt.savefig(os.path.join(path, f_name), dpi=300)
+                print("Plot '%s' saved in %s" % (f_name, path))
+            else:
+                plt.savefig(f_name, dpi=300)
+                print("Plot %s saved." % f_name)
+        if 'show_plot' in kwargs.keys():
+            plt.show() if kwargs['show_plot'] is True else plt.close()
+        else:
+            plt.close()
 
     def plot_sum_stacked(self, xlabel='Triebzug', plot_as_summary=False,
                          saveplot=False, filename='sum_stacked',
