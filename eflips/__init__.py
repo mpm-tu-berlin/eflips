@@ -6,7 +6,6 @@ namespace.
 @author: e.lauth
 """
 
-import eflips.depot
 import eflips.settings
 from eflips.evaluation import DataLogger, DataGatherer, Evaluation
 from eflips.helperFunctions import flexprint, Tictoc, progressbar, save_json, \

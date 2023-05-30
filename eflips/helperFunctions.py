@@ -214,27 +214,6 @@ def flexprint(*objects, sep=' ', end='\n', file=sys.stdout, flush=False,
 
         print(*objects, sep=sep, end=end, file=file, flush=flush)
 
-        # gui logging
-        from eflips.depot.gui.depot_view import main_view
-        if main_view is not None:
-            s = []
-            for x in objects:
-                if isinstance(x, str):
-                    if x != "":
-                        s.append(x)
-                else:
-                    try:
-                        arr = []
-                        arr.append("[")
-                        for t in x:
-                            subArr = []
-                            subArr.append(t)
-                        arr.append(", ".join(subArr))
-                        arr.append("]")
-                        s.append("".join(arr))
-                    except:
-                        pass
-            main_view.log("DEBUG", ' '.join(s))
 
 
 class Tictoc:
