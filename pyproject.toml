@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "eflips"
+version = "1.0.0"
+description = "eFLIPS: Electric Fleet and Infrastructure Planning/Simulation"
+authors = ["D. Jefferies <dominic.jefferies@tu-berlin.de>, P. Boev <pavel.boev@tu-berlin.de>, E. Lauth <enrico.lauth@tu-berlin.de>"]
+license = "AGPLv3"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+simpy = "^4.0.1"
+matplotlib = "^3.7.1"
+openpyxl = "^3.1.2"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
