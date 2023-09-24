@@ -141,9 +141,6 @@ from eflips.helperFunctions import cm2in, load_json, deep_merge
 from matplotlib import rcParams
 import os.path
 
-
-filename_default = 'settings_files\\default'
-
 current_path = os.path.dirname(__file__)
 default_settings_file = os.path.join(current_path, os.path.join("settings_files", "default"))
 
@@ -184,5 +181,5 @@ def reset_settings():
     since values are replaced.
     """
     globalConstants.clear()
-    new = load_json(filename_default)
+    new = load_json(default_settings_file)
     deep_merge(globalConstants, new)
