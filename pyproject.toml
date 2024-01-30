@@ -1,8 +1,8 @@
 [tool.poetry]
 name = "eflips"
-version = "1.0.0"
+version = "0.1.0"
 description = "eFLIPS: Electric Fleet and Infrastructure Planning/Simulation"
-authors = ["D. Jefferies <dominic.jefferies@tu-berlin.de>, P. Boev <pavel.boev@tu-berlin.de>, E. Lauth <enrico.lauth@tu-berlin.de>"]
+authors = ["D. Jefferies <dominic.jefferies@tu-berlin.de>", "P. Boev <pavel.boev@tu-berlin.de>", "E. Lauth <enrico.lauth@tu-berlin.de>"]
 license = "AGPLv3"
 readme = "README.md"
 
