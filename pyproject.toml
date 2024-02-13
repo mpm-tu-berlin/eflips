@@ -1,13 +1,13 @@
 [tool.poetry]
 name = "eflips"
-version = "0.1.0"
+version = "0.1.1"
 description = "eFLIPS: Electric Fleet and Infrastructure Planning/Simulation"
 authors = ["D. Jefferies <dominic.jefferies@tu-berlin.de>", "P. Boev <pavel.boev@tu-berlin.de>", "E. Lauth <enrico.lauth@tu-berlin.de>"]
 license = "AGPLv3"
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.11"
+python = "^3.9"
 simpy = "^4.0.1"
 matplotlib = "^3.7.1"
 openpyxl = "^3.1.2"
